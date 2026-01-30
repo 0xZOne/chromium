@@ -168,6 +168,15 @@ void UrlLoader::Close() {
     AbortLoad(Result::kErrorAborted);
 }
 
+void UrlLoader::EnablePushMode(DataPushedCallback data_callback,
+                               LoadingCompleteCallback complete_callback) {
+  DCHECK(data_callback);
+  DCHECK(complete_callback);
+  push_mode_enabled_ = true;
+  push_data_callback_ = std::move(data_callback);
+  push_complete_callback_ = std::move(complete_callback);
+}
+
 // Modeled on `content::PepperURLLoaderHost::WillFollowRedirect()`.
 bool UrlLoader::WillFollowRedirect(
     const blink::WebURL& new_url,
@@ -216,6 +225,12 @@ void UrlLoader::DidReceiveData(base::span<const char> data) {
     return;
   }
 
+  // In push mode, directly push data to the callback without buffering.
+  if (push_mode_enabled_) {
+    push_data_callback_.Run(base::as_bytes(data));
+    return;
+  }
+
   buffer_.insert(buffer_.end(), data.begin(), data.end());
 
   // Defer loading if the buffer is too full.
@@ -232,6 +247,13 @@ void UrlLoader::DidFinishLoading() {
   DCHECK_EQ(state_, LoadingState::kStreamingData);
 
   SetLoadComplete(Result::kSuccess);
+
+  // In push mode, call the complete callback.
+  if (push_mode_enabled_ && push_complete_callback_) {
+    std::move(push_complete_callback_).Run(Result::kSuccess);
+    return;
+  }
+
   RunReadCallback();
 }
 
@@ -262,6 +284,12 @@ void UrlLoader::AbortLoad(Result result) {
 
   SetLoadComplete(result);
   buffer_.clear();
+
+  // In push mode, call the complete callback with the error.
+  if (push_mode_enabled_ && push_complete_callback_) {
+    std::move(push_complete_callback_).Run(result);
+    return;
+  }
 
   if (open_callback_) {
     DCHECK(!read_callback_);

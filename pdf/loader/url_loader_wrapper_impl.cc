@@ -280,4 +280,30 @@ void URLLoaderWrapperImpl::SetHeadersFromLoader() {
   ParseHeaders(url_loader_->response().headers);
 }
 
+void URLLoaderWrapperImpl::EnablePushMode(
+    DataPushedCallback data_callback,
+    LoadingCompleteCallback complete_callback) {
+  DCHECK(!push_mode_enabled_);
+  DCHECK(data_callback);
+  DCHECK(complete_callback);
+  push_mode_enabled_ = true;
+  push_data_callback_ = std::move(data_callback);
+  push_complete_callback_ = std::move(complete_callback);
+  // Also enable push mode in the underlying UrlLoader.
+  url_loader_->EnablePushMode(
+      push_data_callback_,
+      base::BindOnce(&URLLoaderWrapperImpl::OnPushModeComplete,
+                     weak_factory_.GetWeakPtr()));
+}
+
+bool URLLoaderWrapperImpl::IsPushModeEnabled() const {
+  return push_mode_enabled_;
+}
+
+void URLLoaderWrapperImpl::OnPushModeComplete(int result) {
+  if (push_complete_callback_) {
+    std::move(push_complete_callback_).Run(result);
+  }
+}
+
 }  // namespace chrome_pdf
