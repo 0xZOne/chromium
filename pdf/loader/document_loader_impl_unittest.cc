@@ -222,8 +222,9 @@ class TestClient : public DocumentLoader::Client {
 
   // DocumentLoader::Client overrides:
   std::unique_ptr<URLLoaderWrapper> CreateURLLoader() override {
-    return std::unique_ptr<URLLoaderWrapper>(
-        new TestURLLoader(partial_loader_data()));
+    auto loader = std::make_unique<TestURLLoader>(partial_loader_data());
+    last_partial_loader_ = loader.get();
+    return loader;
   }
   void OnPendingRequestComplete() override {}
   void OnNewDataReceived() override {}
@@ -231,8 +232,9 @@ class TestClient : public DocumentLoader::Client {
   void OnDocumentCanceled() override {}
 
   std::unique_ptr<URLLoaderWrapper> CreateFullPageLoader() {
-    return std::unique_ptr<URLLoaderWrapper>(
-        new TestURLLoader(full_page_loader_data()));
+    auto loader = std::make_unique<TestURLLoader>(full_page_loader_data());
+    last_full_page_loader_ = loader.get();
+    return loader;
   }
 
   TestURLLoader::LoaderData* full_page_loader_data() {
@@ -241,6 +243,11 @@ class TestClient : public DocumentLoader::Client {
   TestURLLoader::LoaderData* partial_loader_data() {
     return &partial_loader_data_;
   }
+
+  // Get the last created full page loader (for push mode testing).
+  TestURLLoader* last_full_page_loader() { return last_full_page_loader_; }
+  // Get the last created partial loader (for push mode testing).
+  TestURLLoader* last_partial_loader() { return last_partial_loader_; }
 
   void SetCanUsePartialLoading() {
     full_page_loader_data()->set_content_length(10 * 1024 * 1024);
@@ -266,6 +273,8 @@ class TestClient : public DocumentLoader::Client {
  private:
   TestURLLoader::LoaderData full_page_loader_data_;
   TestURLLoader::LoaderData partial_loader_data_;
+  raw_ptr<TestURLLoader> last_full_page_loader_ = nullptr;
+  raw_ptr<TestURLLoader> last_partial_loader_ = nullptr;
 };
 
 class MockClient : public TestClient {
@@ -1273,15 +1282,42 @@ TEST_F(DocumentLoaderImplPushModeTest, DataReceivedInPushMode) {
   EXPECT_TRUE(loader.is_push_mode_enabled());
   EXPECT_EQ(0U, loader.BytesReceived());
 
+  // Get the test loader to push data.
+  TestURLLoader* test_loader = client.last_full_page_loader();
+  ASSERT_TRUE(test_loader != nullptr);
+  EXPECT_TRUE(test_loader->IsPushModeEnabled());
+
   // Verify OnNewDataReceived is called when data is pushed.
   EXPECT_CALL(client, OnNewDataReceived()).Times(1);
 
   // Create and push test data.
   std::vector<uint8_t> test_data(1024, 0xAB);
-  auto* test_loader =
-      static_cast<TestURLLoader*>(client.full_page_loader_data());
-  // Note: We can't directly access the loader here through the wrapper,
-  // but we can verify the behavior through the loader state.
+  test_loader->PushData(test_data);
+
+  // Verify data was received.
+  EXPECT_EQ(1024U, loader.BytesReceived());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, DocumentCompleteInPushMode) {
+  NiceMock<MockClient> client;
+  client.full_page_loader_data()->set_content_length(2048);
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+
+  TestURLLoader* test_loader = client.last_full_page_loader();
+  ASSERT_TRUE(test_loader != nullptr);
+
+  // Push enough data to complete the document.
+  std::vector<uint8_t> test_data(2048, 0xAB);
+  test_loader->PushData(test_data);
+
+  // Signal completion.
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+  test_loader->PushComplete(0);
+
+  EXPECT_TRUE(loader.IsDocumentComplete());
 }
 
 TEST_F(DocumentLoaderImplPushModeTest, FallbackToPullMode) {
