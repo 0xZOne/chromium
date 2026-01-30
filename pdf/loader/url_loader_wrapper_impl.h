@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
@@ -47,6 +48,9 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
                  base::OnceCallback<void(bool)> callback) override;
   void ReadResponseBody(base::span<uint8_t> buffer,
                         base::OnceCallback<void(int)> callback) override;
+  void EnablePushMode(OnDataCallback on_data,
+                      OnCompleteCallback on_complete) override;
+  bool IsPushModeEnabled() const override;
 
  private:
   void SetHeadersFromLoader();
@@ -55,6 +59,10 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
   void DidRead(base::OnceCallback<void(int)> callback, int32_t result);
 
   void ReadResponseBodyImpl(base::OnceCallback<void(int)> callback);
+
+  // Push mode helpers.
+  void ReadResponseBodyForPushMode();
+  void DidReadForPushMode(int32_t result);
 
   std::unique_ptr<UrlLoader> url_loader_;
 
@@ -70,6 +78,12 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
   bool multi_part_processed_ = false;
 
   base::OneShotTimer read_starter_;
+
+  // Push mode members.
+  bool push_mode_enabled_ = false;
+  OnDataCallback on_data_callback_;
+  OnCompleteCallback on_complete_callback_;
+  std::vector<uint8_t> push_mode_buffer_;
 
   base::WeakPtrFactory<URLLoaderWrapperImpl> weak_factory_{this};
 };

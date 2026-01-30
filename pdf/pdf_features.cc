@@ -36,6 +36,11 @@ BASE_FEATURE(kPdfPartialLoading, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPdfPortfolio, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Push-based loading for PDF resources.
+// When enabled, data is pushed directly from the network layer to
+// DocumentLoader, eliminating the 2ms timer delay in the pull-based approach.
+BASE_FEATURE(kPdfPushBasedLoading, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables PDF WebUI save to get PDF content from renderer in blocks.
 BASE_FEATURE(kPdfGetSaveDataInBlocks, base::FEATURE_DISABLED_BY_DEFAULT);
 

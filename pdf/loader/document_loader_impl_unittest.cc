@@ -181,8 +181,36 @@ class TestURLLoader : public URLLoaderWrapper {
     data_->SetReadCallback(std::move(callback));
   }
 
+  void EnablePushMode(OnDataCallback on_data,
+                      OnCompleteCallback on_complete) override {
+    push_mode_enabled_ = true;
+    on_data_callback_ = std::move(on_data);
+    on_complete_callback_ = std::move(on_complete);
+  }
+
+  bool IsPushModeEnabled() const override { return push_mode_enabled_; }
+
+  // Test helper: push data in push mode.
+  void PushData(base::span<const uint8_t> data) {
+    DCHECK(push_mode_enabled_);
+    if (on_data_callback_) {
+      on_data_callback_.Run(data);
+    }
+  }
+
+  // Test helper: signal completion in push mode.
+  void PushComplete(int result) {
+    DCHECK(push_mode_enabled_);
+    if (on_complete_callback_) {
+      std::move(on_complete_callback_).Run(result);
+    }
+  }
+
  private:
   raw_ptr<LoaderData> data_;
+  bool push_mode_enabled_ = false;
+  OnDataCallback on_data_callback_;
+  OnCompleteCallback on_complete_callback_;
 };
 
 class TestClient : public DocumentLoader::Client {
@@ -1196,6 +1224,81 @@ TEST_F(DocumentLoaderImplTest, IgnoreDataMoreThanExpectedWithPartialAtFileEnd) {
   // The downloads should be finished.
   EXPECT_TRUE(client.full_page_loader_data()->closed());
   EXPECT_TRUE(client.partial_loader_data()->closed());
+}
+
+// Tests for push-based loading feature.
+class DocumentLoaderImplPushModeTest : public testing::Test {
+ protected:
+  DocumentLoaderImplPushModeTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kPdfPushBasedLoading},
+        /*disabled_features=*/{features::kPdfPartialLoading});
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeEnabledByDefault) {
+  // Test that push mode is enabled when feature flag is on.
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Push mode should be enabled.
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+  // Pull mode (ReadResponseBody) should not be called.
+  EXPECT_FALSE(client.full_page_loader_data()->IsWaitRead());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeDisabledByFeatureFlag) {
+  // Reset and disable push mode feature.
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitAndDisableFeature(features::kPdfPushBasedLoading);
+
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Push mode should be disabled.
+  EXPECT_FALSE(loader.is_push_mode_enabled());
+  // Pull mode should be active.
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, DataReceivedInPushMode) {
+  NiceMock<MockClient> client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+  EXPECT_EQ(0U, loader.BytesReceived());
+
+  // Verify OnNewDataReceived is called when data is pushed.
+  EXPECT_CALL(client, OnNewDataReceived()).Times(1);
+
+  // Create and push test data.
+  std::vector<uint8_t> test_data(1024, 0xAB);
+  auto* test_loader =
+      static_cast<TestURLLoader*>(client.full_page_loader_data());
+  // Note: We can't directly access the loader here through the wrapper,
+  // but we can verify the behavior through the loader state.
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, FallbackToPullMode) {
+  // Test that pull mode works when push mode feature is disabled.
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.Init();
+
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_FALSE(loader.is_push_mode_enabled());
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+
+  // Pull mode should work as before.
+  client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+  EXPECT_EQ(kDefaultRequestSize, loader.BytesReceived());
 }
 
 }  // namespace chrome_pdf

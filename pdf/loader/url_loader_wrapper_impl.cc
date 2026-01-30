@@ -280,4 +280,46 @@ void URLLoaderWrapperImpl::SetHeadersFromLoader() {
   ParseHeaders(url_loader_->response().headers);
 }
 
+void URLLoaderWrapperImpl::EnablePushMode(OnDataCallback on_data,
+                                          OnCompleteCallback on_complete) {
+  DCHECK(!push_mode_enabled_);
+  DCHECK(on_data);
+  DCHECK(on_complete);
+  push_mode_enabled_ = true;
+  on_data_callback_ = std::move(on_data);
+  on_complete_callback_ = std::move(on_complete);
+
+  // Allocate buffer for push mode reads.
+  constexpr size_t kPushModeBufferSize = 256 * 1024;
+  push_mode_buffer_.resize(kPushModeBufferSize);
+
+  // Start reading immediately without the 2ms delay.
+  ReadResponseBodyForPushMode();
+}
+
+bool URLLoaderWrapperImpl::IsPushModeEnabled() const {
+  return push_mode_enabled_;
+}
+
+void URLLoaderWrapperImpl::ReadResponseBodyForPushMode() {
+  // In push mode, we read data directly without the 2ms delay.
+  url_loader_->ReadResponseBody(
+      push_mode_buffer_,
+      base::BindOnce(&URLLoaderWrapperImpl::DidReadForPushMode,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void URLLoaderWrapperImpl::DidReadForPushMode(int32_t result) {
+  if (result > 0) {
+    // Push data to callback.
+    on_data_callback_.Run(
+        base::span(push_mode_buffer_).first(static_cast<size_t>(result)));
+    // Continue reading without delay.
+    ReadResponseBodyForPushMode();
+  } else {
+    // Loading complete (result == 0) or error (result < 0).
+    std::move(on_complete_callback_).Run(result);
+  }
+}
+
 }  // namespace chrome_pdf
