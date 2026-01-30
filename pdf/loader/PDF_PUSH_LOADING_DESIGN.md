@@ -93,16 +93,18 @@ BASE_FEATURE(kPdfPushBasedLoading, base::FEATURE_DISABLED_BY_DEFAULT);
 ```cpp
 class URLLoaderWrapper {
  public:
-  // 新增：数据推送回调接口
-  using DataCallback = base::RepeatingCallback<void(base::span<const uint8_t>)>;
-  using CompleteCallback = base::OnceCallback<void(int result)>;
+  // 数据推送回调接口
+  using DataPushedCallback =
+      base::RepeatingCallback<void(base::span<const uint8_t>)>;
+  // 完成回调接口（result为0表示成功，负数表示错误）
+  using LoadingCompleteCallback = base::OnceCallback<void(int result)>;
 
-  // 新增：设置push模式的数据接收回调
-  virtual void SetPushModeCallbacks(DataCallback data_callback,
-                                    CompleteCallback complete_callback) {}
+  // 启用push模式，设置数据接收回调
+  virtual void EnablePushMode(DataPushedCallback data_callback,
+                              LoadingCompleteCallback complete_callback) {}
 
-  // 新增：启动push模式的数据接收
-  virtual void StartPushMode() {}
+  // 返回是否启用了push模式
+  virtual bool IsPushModeEnabled() const { return false; }
 
   // ... 现有接口保持不变
 };
@@ -113,17 +115,30 @@ class URLLoaderWrapper {
 在 `pdf/loader/url_loader_wrapper_impl.h` 和 `.cc` 中：
 
 - 新增 push 模式相关成员变量
-- 实现 `SetPushModeCallbacks()` 和 `StartPushMode()`
+- 实现 `EnablePushMode()` 和 `IsPushModeEnabled()`
 - Push模式下绕过2ms定时器，直接调用数据回调
 
-#### 3. DocumentLoaderImpl修改
+#### 3. UrlLoader修改
+
+在 `pdf/loader/url_loader.h` 和 `.cc` 中：
+
+- 新增 `EnablePushMode()` 方法和相关成员变量
+- `DidReceiveData()` 在push模式下直接调用数据回调，绕过内部buffer
+- `DidFinishLoading()` 和 `DidFail()` 在push模式下调用完成回调
+
+#### 4. DocumentLoaderImpl修改
 
 在 `pdf/loader/document_loader_impl.h` 和 `.cc` 中：
 
 - 根据feature flag选择使用pull或push模式
+- 新增 `is_push_mode_enabled()` 访问器
+- 新增 `SetupPushModeIfEnabled()` 设置push模式
+- 新增 `OnDataPushed()` 处理推送的数据
+- 新增 `OnLoadingComplete()` 处理加载完成
 - Push模式下：
   - 设置数据回调到URLLoaderWrapper
   - 数据直接从回调写入chunk_stream，绕过中间buffer_
+  - `ReadMore()` 在push模式下直接返回（不发起读取请求）
 - Pull模式下：保持现有逻辑不变
 
 ### 代码结构
@@ -145,13 +160,13 @@ class URLLoaderWrapper {
 
 ## 实现步骤
 
-1. 添加feature flag `kPdfPushBasedLoading`
-2. 扩展 `URLLoaderWrapper` 接口
-3. 实现 `URLLoaderWrapperImpl` 的push模式支持
-4. 修改 `UrlLoader` 支持push模式数据传递
-5. 修改 `DocumentLoaderImpl` 使用push模式
-6. 添加单元测试
-7. 代码审查和安全检查
+1. ✅ 添加feature flag `kPdfPushBasedLoading`
+2. ✅ 扩展 `URLLoaderWrapper` 接口
+3. ✅ 实现 `URLLoaderWrapperImpl` 的push模式支持
+4. ✅ 修改 `UrlLoader` 支持push模式数据传递
+5. ✅ 修改 `DocumentLoaderImpl` 使用push模式
+6. ✅ 添加单元测试
+7. ✅ 代码审查和安全检查
 
 ## 风险和缓解措施
 
