@@ -119,18 +119,12 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
       loader_->IsAcceptRangesBytes() && !loader_->IsContentEncoded() &&
       GetDocumentSize());
 
-  if (push_mode_enabled_) {
-    // Push mode: data is pushed directly via callbacks, bypassing the 2ms
-    // timer delay in pull mode.
-    loader_->EnablePushMode(
-        base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
-                            weak_factory_.GetWeakPtr()),
-        base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
-                       weak_factory_.GetWeakPtr()));
-  } else {
-    // Pull mode: use existing ReadMore() approach with 2ms timer delay.
-    ReadMore();
-  }
+  // For the initial load, the loader is already opened (from HandleDocumentLoad),
+  // so we cannot use UrlLoader's push mode which requires SetPushModeCallbacks()
+  // to be called before Open(). We use the regular pull mode for the initial load.
+  // Push mode (Solution 2) will be used for partial loads where we create a new
+  // loader and can set push callbacks before OpenRange().
+  ReadMore();
   return true;
 }
 
@@ -274,6 +268,16 @@ void DocumentLoaderImpl::ContinueDownload() {
 
   loader_ = client_->CreateURLLoader();
 
+  // Solution 2: Set push mode callbacks BEFORE OpenRange() so that UrlLoader
+  // can push data directly without buffering.
+  if (push_mode_enabled_) {
+    loader_->SetPushModeCallbacks(
+        base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
+                            weak_factory_.GetWeakPtr()),
+        base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
+                       weak_factory_.GetWeakPtr()));
+  }
+
   loader_->OpenRange(url_, url_, start, length,
                      base::BindOnce(&DocumentLoaderImpl::DidOpenPartial,
                                     weak_factory_.GetWeakPtr()));
@@ -292,15 +296,12 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
   // data we'll get it.
   if (loader_->IsMultipart()) {
     // Needs more data to calc chunk index.
-    if (push_mode_enabled_) {
-      loader_->EnablePushMode(
-          base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
-                              weak_factory_.GetWeakPtr()),
-          base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
-                         weak_factory_.GetWeakPtr()));
-    } else {
+    // In push mode (Solution 2), callbacks were already set before OpenRange(),
+    // so data is already being pushed. In pull mode, we need to start reading.
+    if (!push_mode_enabled_) {
       ReadMore();
     }
+    // In push mode, data will arrive via OnDataPushed callbacks.
     return;
   }
 
@@ -321,15 +322,12 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
     SetPartialLoadingEnabled(false);
   }
 
-  if (push_mode_enabled_) {
-    loader_->EnablePushMode(
-        base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
-                            weak_factory_.GetWeakPtr()),
-        base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
-                       weak_factory_.GetWeakPtr()));
-  } else {
+  // In push mode (Solution 2), callbacks were set before OpenRange(),
+  // so data is already being pushed. In pull mode, continue downloading.
+  if (!push_mode_enabled_) {
     ContinueDownload();
   }
+  // In push mode, data will arrive via OnDataPushed callbacks.
 }
 
 void DocumentLoaderImpl::ReadMore() {
@@ -445,7 +443,7 @@ void DocumentLoaderImpl::ReadComplete() {
   }
 }
 
-void DocumentLoaderImpl::OnDataPushed(base::span<const uint8_t> data) {
+void DocumentLoaderImpl::OnDataPushed(base::span<const char> data) {
   DCHECK(push_mode_enabled_);
 
   if (loader_->IsMultipart()) {
@@ -490,6 +488,14 @@ void DocumentLoaderImpl::OnDataPushed(base::span<const uint8_t> data) {
                      next_request.length() * DataStream::kChunkSize);
 
         loader_ = client_->CreateURLLoader();
+
+        // Solution 2: Set push mode callbacks BEFORE OpenRange().
+        loader_->SetPushModeCallbacks(
+            base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
+                                weak_factory_.GetWeakPtr()),
+            base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
+                           weak_factory_.GetWeakPtr()));
+
         loader_->OpenRange(
             url_, url_, start, length,
             base::BindOnce(&DocumentLoaderImpl::DidOpenPartial,
@@ -520,7 +526,7 @@ void DocumentLoaderImpl::OnLoadingComplete(int result) {
   ContinueDownload();
 }
 
-bool DocumentLoaderImpl::SavePushedData(base::span<const uint8_t> data) {
+bool DocumentLoaderImpl::SavePushedData(base::span<const char> data) {
   const uint32_t document_size = GetDocumentSize();
   bytes_received_ += data.size();
   bool chunk_saved = false;

@@ -78,9 +78,9 @@ class DocumentLoaderImpl : public DocumentLoader {
   uint32_t EndOfCurrentChunk() const;
 
   // Push mode handlers.
-  void OnDataPushed(base::span<const uint8_t> data);
+  void OnDataPushed(base::span<const char> data);
   void OnLoadingComplete(int result);
-  bool SavePushedData(base::span<const uint8_t> data);
+  bool SavePushedData(base::span<const char> data);
 
   const raw_ptr<Client> client_;
   std::string url_;

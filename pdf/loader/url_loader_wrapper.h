@@ -60,21 +60,22 @@ class URLLoaderWrapper {
   virtual void ReadResponseBody(base::span<uint8_t> buffer,
                                 base::OnceCallback<void(int)> callback) = 0;
 
-  // Push mode interface. When enabled, data is pushed via callback instead
-  // of being pulled via ReadResponseBody().
+  // Solution 2: Direct push mode at UrlLoader level.
+  // Push mode interface where data is pushed directly from UrlLoader without
+  // intermediate buffering. This bypasses the internal buffer completely.
   using OnDataCallback =
-      base::RepeatingCallback<void(base::span<const uint8_t> data)>;
+      base::RepeatingCallback<void(base::span<const char> data)>;
   using OnCompleteCallback = base::OnceCallback<void(int result)>;
 
-  // Enable push mode with the provided callbacks. In push mode, data is pushed
-  // directly to the on_data callback as it arrives, bypassing the 2ms read
-  // delay. Must be called after Open() succeeds and before any
-  // ReadResponseBody() calls. Once enabled, ReadResponseBody() should not be
-  // called.
-  virtual void EnablePushMode(OnDataCallback on_data,
-                              OnCompleteCallback on_complete) = 0;
+  // Set push mode callbacks on the underlying UrlLoader. Must be called
+  // BEFORE OpenRange() is called. When push mode is active, data is pushed
+  // directly from UrlLoader::DidReceiveData() to the callback, completely
+  // bypassing the internal buffer and the 2ms read delay.
+  // After calling this, ReadResponseBody() should not be used.
+  virtual void SetPushModeCallbacks(OnDataCallback on_data,
+                                    OnCompleteCallback on_complete) = 0;
 
-  // Returns true if push mode is currently enabled.
+  // Returns true if push mode callbacks have been set.
   virtual bool IsPushModeEnabled() const = 0;
 };
 
