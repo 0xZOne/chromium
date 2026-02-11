@@ -4,17 +4,18 @@
 ## Table of Contents / 目录
 
 1. [概述](#1-概述)
-2. [整体架构](#2-整体架构)
-3. [核心组件详解](#3-核心组件详解)
-4. [WebUI 前端架构](#4-webui-前端架构)
-5. [通信机制](#5-通信机制)
-6. [首次运行体验 (FRE)](#6-首次运行体验-fre)
-7. [上下文和媒体处理](#7-上下文和媒体处理)
-8. [用户偏好设置](#8-用户偏好设置)
-9. [指标系统](#9-指标系统)
-10. [安全和权限](#10-安全和权限)
-11. [关键代码路径](#11-关键代码路径)
-12. [总结](#12-总结)
+2. [本地编译启用 GLIC](#2-本地编译启用-glic)
+3. [整体架构](#3-整体架构)
+4. [核心组件详解](#4-核心组件详解)
+5. [WebUI 前端架构](#5-webui-前端架构)
+6. [通信机制](#6-通信机制)
+7. [首次运行体验 (FRE)](#7-首次运行体验-fre)
+8. [上下文和媒体处理](#8-上下文和媒体处理)
+9. [用户偏好设置](#9-用户偏好设置)
+10. [指标系统](#10-指标系统)
+11. [安全和权限](#11-安全和权限)
+12. [关键代码路径](#12-关键代码路径)
+13. [总结](#13-总结)
 
 ---
 
@@ -45,7 +46,146 @@ chrome/browser/resources/settings/glic_page/ # 设置页面
 
 ---
 
-## 2. 整体架构
+## 2. 本地编译启用 GLIC
+
+### 2.1 能否在本地编译的 Chromium 中启用 GLIC？
+
+**简短回答：技术上可以编译，但无法完全正常使用。**
+
+GLIC 功能在本地编译的 Chromium 中存在以下限制：
+
+### 2.2 编译层面
+
+GLIC 代码默认会被编译到 Chromium 中。在 `chrome/common/features.gni` 中：
+
+```gni
+# Enables inclusion of glic in the build.
+enable_glic = is_mac || is_win || is_linux || is_chromeos || is_android
+```
+
+这意味着在 macOS、Windows、Linux、ChromeOS 和 Android 平台上，GLIC 代码会自动包含在编译中。
+
+### 2.3 功能开关层面
+
+主要的功能开关 `kGlic` 默认是**禁用**的：
+
+```cpp
+// chrome/common/chrome_features.cc
+BASE_FEATURE(kGlic, base::FEATURE_DISABLED_BY_DEFAULT);
+```
+
+要启用该功能，需要通过命令行参数启动 Chrome：
+
+```bash
+./chrome --enable-features=Glic
+```
+
+### 2.4 为什么无法完全正常使用
+
+即使通过命令行启用了 `kGlic` 功能开关，仍有以下关键限制：
+
+#### 2.4.1 账户能力检查 (Account Capability)
+
+GLIC 需要检查用户账户的 `can_use_gemini_in_chrome` 或 `can_use_model_execution_features` 能力：
+
+```cpp
+// chrome/browser/glic/public/glic_enabling.cc
+signin::Tribool capability_value =
+    primary_account.capabilities.can_use_model_execution_features();
+if (base::FeatureList::IsEnabled(
+        switches::kGlicEligibilitySeparateAccountCapability) &&
+    (CanUseGeminiInChrome(primary_account.capabilities) !=
+     signin::Tribool::kUnknown)) {
+  capability_value = CanUseGeminiInChrome(primary_account.capabilities);
+}
+result.primary_account_not_capable =
+    (capability_value != signin::Tribool::kTrue);
+```
+
+这些能力是由 Google 服务端根据用户账户类型和订阅状态返回的，**普通用户账户可能没有这些权限**。
+
+#### 2.4.2 国家/地区限制
+
+默认情况下，GLIC 仅在特定国家/地区启用：
+
+```cpp
+// Default enabled countries
+constexpr char kDefaultEnabledCountries[] = "us,ca";
+
+// Default enabled locales
+constexpr char kDefaultEnabledLocales[] = "en-us";
+```
+
+可以通过禁用地区过滤来绕过：
+
+```bash
+./chrome --enable-features=Glic --disable-features=GlicCountryFiltering,GlicLocaleFiltering
+```
+
+#### 2.4.3 Web Client URL 依赖
+
+GLIC 的 Web Client 加载自 Google 托管的 URL：
+
+```cpp
+const base::FeatureParam<std::string> kGlicGuestURL{
+    &kGlicURLConfig, "glic-guest-url", "https://gemini.google.com/glic"};
+```
+
+这个 URL 是 Google 内部服务，**需要适当的认证和权限才能访问**，普通用户无法直接访问。
+
+#### 2.4.4 用户状态检查
+
+如果启用了 `kGlicUserStatusCheck`，还会向 Google 服务器验证用户状态：
+
+```cpp
+if (base::FeatureList::IsEnabled(features::kGlicUserStatusCheck)) {
+    // Check cached user status from server
+    switch (cached_user_status->user_status_code) {
+        case UserStatusCode::DISABLED_BY_ADMIN:
+            result.disallowed_by_remote_admin = true;
+            break;
+        // ...
+    }
+}
+```
+
+### 2.5 开发者测试选项
+
+对于 Chromium 开发者/贡献者，可以使用以下方式进行测试：
+
+#### 2.5.1 绕过启用检查 (仅限测试)
+
+在测试代码中可以使用：
+
+```cpp
+GlicEnabling::SetBypassEnablementChecksForTesting(true);
+```
+
+#### 2.5.2 完整的开发模式启动参数
+
+```bash
+./chrome \
+    --enable-features=Glic,GlicDebugWebview \
+    --disable-features=GlicCountryFiltering,GlicLocaleFiltering,GlicUserStatusCheck
+```
+
+注意：即使使用这些参数，由于 Web Client URL 的限制，功能仍然无法完整工作。
+
+### 2.6 总结
+
+| 项目 | 状态 |
+|------|------|
+| 代码编译 | ✅ 可以 - 默认包含在编译中 |
+| 功能开关启用 | ⚠️ 需要命令行参数 |
+| 账户能力验证 | ❌ 需要 Google 账户特定权限 |
+| Web Client 访问 | ❌ 需要访问 Google 内部服务 |
+| 完整功能使用 | ❌ 无法正常使用 |
+
+**结论**：本地编译的 Chromium 可以包含 GLIC 代码并启用功能开关，但由于依赖 Google 服务端的账户验证和 Web Client 托管服务，**普通开发者无法使用完整功能**。GLIC 本质上是 Google Chrome 的专有功能，依赖 Google 的后端服务。
+
+---
+
+## 3. 整体架构
 
 ### 2.1 架构图
 
@@ -113,9 +253,9 @@ GlicKeyedService (KeyedService)
 
 ---
 
-## 3. 核心组件详解
+## 4. 核心组件详解
 
-### 3.1 GlicKeyedService
+### 13.1 GlicKeyedService
 
 **文件位置**: `chrome/browser/glic/public/glic_keyed_service.h`
 
@@ -145,7 +285,7 @@ virtual bool IsWindowShowing() const;
 GlicInstance* GetInstanceForActiveTab(BrowserWindowInterface* bwi);
 ```
 
-### 3.2 GlicWindowController
+### 13.2 GlicWindowController
 
 **文件位置**: `chrome/browser/glic/widget/glic_window_controller.h`
 
@@ -168,7 +308,7 @@ enum class State {
 - 处理窗口位置和大小
 - 管理多实例
 
-### 3.3 GlicSidePanelCoordinatorImpl
+### 13.3 GlicSidePanelCoordinatorImpl
 
 **文件位置**: `chrome/browser/ui/views/side_panel/glic/glic_side_panel_coordinator_impl.h`
 
@@ -201,7 +341,7 @@ enum class State {
 };
 ```
 
-### 3.4 Host
+### 13.4 Host
 
 **文件位置**: `chrome/browser/glic/host/host.h`
 
@@ -234,7 +374,7 @@ public:
 };
 ```
 
-### 3.5 GlicEnabling
+### 13.5 GlicEnabling
 
 **文件位置**: `chrome/browser/glic/public/glic_enabling.h`
 
@@ -276,9 +416,9 @@ struct ProfileEnablement {
 
 ---
 
-## 4. WebUI 前端架构
+## 5. WebUI 前端架构
 
-### 4.1 主要文件结构
+### 13.1 主要文件结构
 
 ```
 chrome/browser/resources/glic/
@@ -299,7 +439,7 @@ chrome/browser/resources/glic/
 └── fre/                   # 首次运行体验
 ```
 
-### 4.2 GlicAppController
+### 13.2 GlicAppController
 
 **文件位置**: `chrome/browser/resources/glic/glic_app_controller.ts`
 
@@ -358,7 +498,7 @@ class GlicAppController implements WebviewDelegate, ApiHostEmbedder {
 }
 ```
 
-### 4.3 WebviewController
+### 13.3 WebviewController
 
 **文件位置**: `chrome/browser/resources/glic/webview.ts`
 
@@ -398,7 +538,7 @@ type PageType =
     'loadError';    // Load error
 ```
 
-### 4.4 GlicApiHost
+### 13.4 GlicApiHost
 
 **文件位置**: `chrome/browser/resources/glic/glic_api_impl/host/glic_api_host.ts`
 
@@ -434,9 +574,9 @@ class GlicApiHost implements PostMessageRequestHandler {
 
 ---
 
-## 5. 通信机制
+## 6. 通信机制
 
-### 5.1 Mojo IPC
+### 13.1 Mojo IPC
 
 Chromium 使用 Mojo 进行进程间通信。GLIC 定义了丰富的 Mojo 接口。
 
@@ -480,7 +620,7 @@ interface WebClientHandler {
 };
 ```
 
-### 5.2 PostMessage 通信
+### 13.2 PostMessage 通信
 
 WebUI 和 Web Client 之间使用 PostMessage 进行通信。
 
@@ -524,9 +664,9 @@ class GlicApiHost implements PostMessageRequestHandler {
 
 ---
 
-## 6. 首次运行体验 (FRE)
+## 7. 首次运行体验 (FRE)
 
-### 6.1 FRE 控制器
+### 13.1 FRE 控制器
 
 **文件位置**: `chrome/browser/glic/fre/glic_fre_controller.h`
 
@@ -559,7 +699,7 @@ public:
 };
 ```
 
-### 6.2 FRE 流程
+### 13.2 FRE 流程
 
 1. 用户首次点击 GLIC 入口
 2. 检查 `ShouldShowFreDialog()` 返回 true
@@ -570,9 +710,9 @@ public:
 
 ---
 
-## 7. 上下文和媒体处理
+## 8. 上下文和媒体处理
 
-### 7.1 标签页上下文共享
+### 13.1 标签页上下文共享
 
 **核心组件**:
 
@@ -598,7 +738,7 @@ GetTabContext(tab, options) {
 }
 ```
 
-### 7.2 媒体集成
+### 13.2 媒体集成
 
 **文件位置**: `chrome/browser/glic/media/`
 
@@ -609,9 +749,9 @@ GetTabContext(tab, options) {
 
 ---
 
-## 8. 用户偏好设置
+## 9. 用户偏好设置
 
-### 8.1 偏好设置定义
+### 13.1 偏好设置定义
 
 **文件位置**: `chrome/browser/glic/glic_pref_names.h`
 
@@ -646,7 +786,7 @@ kGlicPreviousPositionY = "glic.previous_bounds.y"
 kGlicActuationOnWeb = "glic.actuation_on_web"
 ```
 
-### 8.2 设置页面
+### 13.2 设置页面
 
 **文件位置**: `chrome/browser/resources/settings/glic_page/`
 
@@ -658,9 +798,9 @@ kGlicActuationOnWeb = "glic.actuation_on_web"
 
 ---
 
-## 9. 指标系统
+## 10. 指标系统
 
-### 9.1 GlicMetrics
+### 13.1 GlicMetrics
 
 **文件位置**: `chrome/browser/glic/glic_metrics.h`
 
@@ -703,9 +843,9 @@ void OnGlicWindowClose(...);
 
 ---
 
-## 10. 安全和权限
+## 11. 安全和权限
 
-### 10.1 权限检查
+### 13.1 权限检查
 
 ```cpp
 // Geolocation permission
@@ -715,7 +855,7 @@ async shouldAllowGeolocationPermissionRequest(): Promise<boolean>;
 async shouldAllowMediaPermissionRequest(): Promise<boolean>;
 ```
 
-### 10.2 URL 白名单
+### 13.2 URL 白名单
 
 WebView 只允许加载特定来源的 URL：
 
@@ -739,7 +879,7 @@ function urlMatchesAllowedOrigin(url: string) {
 }
 ```
 
-### 10.3 企业策略
+### 13.3 企业策略
 
 ```cpp
 // Enterprise admin can disable GLIC
@@ -757,9 +897,9 @@ enum class GlicActuationOnWebPolicyState {
 
 ---
 
-## 11. 关键代码路径
+## 12. 关键代码路径
 
-### 11.1 打开 GLIC 侧边栏
+### 13.1 打开 GLIC 侧边栏
 
 ```
 1. 用户点击 GLIC 按钮
@@ -776,7 +916,7 @@ enum class GlicActuationOnWebPolicyState {
                                        └── 加载 Gemini Web Client
 ```
 
-### 11.2 用户发送消息
+### 13.2 用户发送消息
 
 ```
 1. 用户在 Gemini 页面输入消息
@@ -787,7 +927,7 @@ enum class GlicActuationOnWebPolicyState {
                    └── 调用相应的浏览器功能
 ```
 
-### 11.3 获取标签页上下文
+### 13.3 获取标签页上下文
 
 ```
 1. Web Client 请求标签页上下文
@@ -801,9 +941,9 @@ enum class GlicActuationOnWebPolicyState {
 
 ---
 
-## 12. 总结
+## 13. 总结
 
-### 12.1 架构特点
+### 13.1 架构特点
 
 1. **模块化设计**: 各组件职责明确，通过接口解耦
 2. **多层通信**: Mojo (C++ ↔ WebUI) + PostMessage (WebUI ↔ Web Client)
@@ -811,14 +951,14 @@ enum class GlicActuationOnWebPolicyState {
 4. **权限控制**: 多层权限检查（功能开关、Profile、企业策略）
 5. **可观察模式**: 使用回调列表实现状态变更通知
 
-### 12.2 技术亮点
+### 13.2 技术亮点
 
 - **WebView 隔离**: 使用 `<webview>` 标签隔离第三方内容
 - **响应性监控**: 定期检查 Web Client 响应性
 - **优雅降级**: 各种错误状态有对应的 UI 反馈
 - **多实例支持**: 支持多个独立的对话实例
 
-### 12.3 关键文件速查表
+### 13.3 关键文件速查表
 
 | 功能 | 文件路径 |
 |------|----------|
