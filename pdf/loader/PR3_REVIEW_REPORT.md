@@ -437,4 +437,50 @@ Chinese is the main deviation from Chromium norms.
 
 ---
 
+## Applied Fixes
+
+The following fixes have been applied to address the issues identified above:
+
+### P0-1 Fix: Extract shared chunking logic
+- Created `ProcessReceivedData(base::span<const uint8_t> data)` as a shared
+  method that both `SaveBuffer()` (pull mode) and `OnDataReceived()` (push
+  mode) delegate to. This eliminates the duplicated chunking loop and ensures
+  consistent behavior across both modes.
+
+### P0-2/P0-3 Fix: Mutual exclusion of push mode and partial loading
+- Added guard in `Init()`: when `push_mode_enabled_` is true,
+  `SetPartialLoadingEnabled(false)` is called. This prevents the scenario
+  where `ContinueDownload()` creates a new loader without push mode, and
+  avoids passing the zero-sized `buffer_` to `ReadResponseBody()`.
+
+### P1-1 Fix: Remove unused callback copy in URLLoaderWrapperImpl
+- `URLLoaderWrapperImpl::EnablePushMode()` now passes the data callback
+  directly to `UrlLoader` via `std::move()` instead of storing a copy.
+  Only `on_load_complete_callback_` is stored for forwarding through
+  `DidFinishPushModeLoading()`.
+
+### P1-3 Fix: Unified callback typedefs
+- Removed duplicate `OnDataReceivedCallback` and `OnLoadCompleteCallback`
+  type definitions from `UrlLoader`. `UrlLoader` now references
+  `URLLoaderWrapper::OnDataReceivedCallback` and
+  `URLLoaderWrapper::OnLoadCompleteCallback` directly.
+
+### P1-5 Fix: Proper completion flow in push mode
+- `OnDataReceived()` now calls `ReadComplete()` when `IsDocumentComplete()`
+  returns true, consistent with the pull mode flow.
+- `OnLoadComplete()` always calls `ReadComplete()` (with `loader_.reset()`
+  on success), since partial loading is disabled in push mode.
+
+### P2-4 Fix: Removed unused test variable
+- Removed the unused `complete_called` variable from
+  `UrlLoaderTest::EnablePushMode`.
+
+### Test additions
+- `DocumentLoaderImplPushModeTest::PushModeDisablesPartialLoading`: Verifies
+  that partial loading is disabled when push mode is active, even when the
+  server supports range requests.
+
+---
+
 *Report generated: 2026-02-11*
+*Fixes applied: 2026-02-11*
