@@ -113,7 +113,6 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
 
   url_ = url;
   loader_ = std::move(loader);
-  multipart_chunk_index_initialized_ = false;
 
   if (!loader_->IsContentEncoded())
     chunk_stream_.set_eof_pos(std::max(0, loader_->GetContentLength()));

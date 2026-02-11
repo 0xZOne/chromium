@@ -129,9 +129,6 @@ class TestURLLoader : public URLLoaderWrapper {
     }
     void PushData(base::span<const uint8_t> data) {
       DCHECK(push_mode_enabled_);
-      if (!push_mode_enabled_) {
-        return;
-      }
       if (on_data_received_callback_) {
         on_data_received_callback_.Run(data);
       }
