@@ -311,7 +311,7 @@ with existing flags:
 | OFF | OFF | Pull mode, full page only |
 | ON | OFF | Pull mode, with partial loading |
 | OFF | ON | Push mode, full page only |
-| ON | ON | **Undefined** — potential crash (see P0-2/P0-3) |
+| ON | ON | Push mode for initial loader, pull mode for partial range requests |
 
 **Recommendation**: Add a comment or DCHECK documenting the interaction.
 
@@ -384,14 +384,13 @@ the push mode design. The code location references are useful.
 
 ## Recommendations for Safe Landing
 
-1. **Fix P0-2/P0-3 first**: Add a guard that ensures partial loading is disabled
-   when push mode is active. This is the simplest safe approach:
-   ```cpp
-   // In DocumentLoaderImpl::Init(), after SetPartialLoadingEnabled():
-   if (push_mode_enabled_) {
-     SetPartialLoadingEnabled(false);
-   }
-   ```
+1. **Fix P0-2/P0-3**: Support push mode with partial loading by ensuring:
+   - `buffer_` is always allocated with `kReadBufferSize`
+   - `ReadMore()` only skips reading when the current loader has push mode
+     enabled (`loader_->IsPushModeEnabled()`)
+   - `OnDataReceived()` calls `ContinueDownload()` after data processing
+   - `OnLoadComplete()` handles `is_partial_loader_active_` correctly
+   - Partial loaders created by `ContinueDownload()` use pull mode
 
 2. **Extract shared chunking logic (P0-1)**: Create a `ProcessReceivedData()`
    helper to eliminate the duplication between `SaveBuffer()` and
@@ -400,10 +399,7 @@ the push mode design. The code location references are useful.
 3. **Clean up callback chain (P1-1)**: Remove unused callback storage in
    `URLLoaderWrapperImpl`.
 
-4. **Add interaction guard (P1-5)**: Add DCHECK for push + partial loading
-   mutual exclusion.
-
-5. **Translate design doc (P2-1)**: Convert to English.
+4. **Translate design doc (P2-1)**: Convert to English.
 
 ---
 
@@ -447,11 +443,18 @@ The following fixes have been applied to address the issues identified above:
   mode) delegate to. This eliminates the duplicated chunking loop and ensures
   consistent behavior across both modes.
 
-### P0-2/P0-3 Fix: Mutual exclusion of push mode and partial loading
-- Added guard in `Init()`: when `push_mode_enabled_` is true,
-  `SetPartialLoadingEnabled(false)` is called. This prevents the scenario
-  where `ContinueDownload()` creates a new loader without push mode, and
-  avoids passing the zero-sized `buffer_` to `ReadResponseBody()`.
+### P0-2/P0-3 Fix: Push mode with partial loading support
+- Push mode and partial loading now coexist correctly. The initial full-page
+  loader uses push mode (data pushed via callbacks), while partial loaders
+  created by `ContinueDownload()` use pull mode (ReadMore/ReadResponseBody).
+- `buffer_` is always allocated with `kReadBufferSize` so partial loaders can
+  use it.
+- `ReadMore()` only skips reading when the current loader has push mode
+  enabled (`loader_->IsPushModeEnabled()`), not unconditionally.
+- `OnDataReceived()` calls `ContinueDownload()` after processing data, so
+  partial loading can switch to range requests when needed.
+- `OnLoadComplete()` handles `is_partial_loader_active_` by calling
+  `ContinueDownload()`, matching the pull mode `DidRead()` flow.
 
 ### P1-1 Fix: Remove unused callback copy in URLLoaderWrapperImpl
 - `URLLoaderWrapperImpl::EnablePushMode()` now passes the data callback
@@ -466,19 +469,21 @@ The following fixes have been applied to address the issues identified above:
   `URLLoaderWrapper::OnLoadCompleteCallback` directly.
 
 ### P1-5 Fix: Proper completion flow in push mode
-- `OnDataReceived()` now calls `ReadComplete()` when `IsDocumentComplete()`
-  returns true, consistent with the pull mode flow.
-- `OnLoadComplete()` always calls `ReadComplete()` (with `loader_.reset()`
-  on success), since partial loading is disabled in push mode.
+- `OnDataReceived()` calls `ContinueDownload()` after processing data,
+  consistent with the pull mode flow (DidRead → SaveBuffer → ContinueDownload).
+  This allows partial loading to switch to range requests when needed.
+- `OnLoadComplete()` handles `is_partial_loader_active_` by calling
+  `ContinueDownload()`, matching the pull mode `DidRead()` flow when
+  result == 0.
 
 ### P2-4 Fix: Removed unused test variable
 - Removed the unused `complete_called` variable from
   `UrlLoaderTest::EnablePushMode`.
 
 ### Test additions
-- `DocumentLoaderImplPushModeTest::PushModeDisablesPartialLoading`: Verifies
-  that partial loading is disabled when push mode is active, even when the
-  server supports range requests.
+- `DocumentLoaderImplPushModeTest::PushModeWithPartialLoading`: Verifies
+  that push mode and partial loading coexist correctly when the server
+  supports range requests.
 
 ---
 

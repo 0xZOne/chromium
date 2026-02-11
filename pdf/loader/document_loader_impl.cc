@@ -76,7 +76,7 @@ DocumentLoaderImpl::DocumentLoaderImpl(Client* client)
           base::FeatureList::IsEnabled(features::kPdfPartialLoading)),
       push_mode_enabled_(
           base::FeatureList::IsEnabled(features::kPdfPushBasedLoading)),
-      buffer_(push_mode_enabled_ ? 0 : kReadBufferSize) {}
+      buffer_(kReadBufferSize) {}
 
 DocumentLoaderImpl::~DocumentLoaderImpl() = default;
 
@@ -118,14 +118,6 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
       !base::StartsWith(url, "file://", base::CompareCase::INSENSITIVE_ASCII) &&
       loader_->IsAcceptRangesBytes() && !loader_->IsContentEncoded() &&
       GetDocumentSize());
-
-  // Push mode and partial loading are mutually exclusive. Push mode bypasses
-  // the intermediate buffer_ (which is sized to 0), so ReadMore() used by
-  // partial loading would pass an empty buffer to ReadResponseBody(), causing
-  // kErrorBadArgument. Disable partial loading when push mode is active.
-  if (push_mode_enabled_) {
-    SetPartialLoadingEnabled(false);
-  }
 
   MaybeEnablePushMode();
   ReadMore();
@@ -307,8 +299,10 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
 }
 
 void DocumentLoaderImpl::ReadMore() {
-  // In push mode, data is pushed to us via callbacks, so no need to read.
-  if (push_mode_enabled_) {
+  // In push mode, data is pushed to us via callbacks on the push-mode-enabled
+  // loader. Partial loaders created by ContinueDownload() use pull mode, so
+  // only skip reading when the current loader has push mode enabled.
+  if (push_mode_enabled_ && loader_ && loader_->IsPushModeEnabled()) {
     return;
   }
   loader_->ReadResponseBody(
@@ -448,11 +442,15 @@ void DocumentLoaderImpl::OnDataReceived(base::span<const uint8_t> data) {
   }
 
   bytes_received_ += data.size();
-  ProcessReceivedData(data);
+  if (!ProcessReceivedData(data)) {
+    return;
+  }
 
   if (IsDocumentComplete()) {
     return ReadComplete();
   }
+
+  ContinueDownload();
 }
 
 void DocumentLoaderImpl::OnLoadComplete(int result) {
@@ -463,7 +461,10 @@ void DocumentLoaderImpl::OnLoadComplete(int result) {
 
   // result == 0 means success (EOF).
   loader_.reset();
-  return ReadComplete();
+  if (!is_partial_loader_active_) {
+    return ReadComplete();
+  }
+  return ContinueDownload();
 }
 
 }  // namespace chrome_pdf

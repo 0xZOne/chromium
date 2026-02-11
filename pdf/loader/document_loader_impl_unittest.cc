@@ -1240,8 +1240,9 @@ class DocumentLoaderImplPushModeTest : public testing::Test {
  protected:
   DocumentLoaderImplPushModeTest() {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kPdfPushBasedLoading},
-        /*disabled_features=*/{features::kPdfPartialLoading});
+        /*enabled_features=*/{features::kPdfPushBasedLoading,
+                              features::kPdfPartialLoading},
+        /*disabled_features=*/{});
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -1267,17 +1268,20 @@ TEST_F(DocumentLoaderImplPushModeTest, PushModeEnabled) {
   EXPECT_TRUE(client.full_page_loader_data()->IsPushModeEnabled());
 }
 
-TEST_F(DocumentLoaderImplPushModeTest, PushModeDisablesPartialLoading) {
-  // Test that partial loading is disabled when push mode is active, even
-  // if the server supports range requests.
+TEST_F(DocumentLoaderImplPushModeTest, PushModeWithPartialLoading) {
+  // Test that partial loading works together with push mode when the server
+  // supports range requests. The initial full-page loader uses push mode,
+  // while partial loaders created by ContinueDownload() use pull mode.
   TestClient client;
   client.SetCanUsePartialLoading();
   DocumentLoaderImpl loader(&client);
   EXPECT_TRUE(loader.is_push_mode_enabled());
   loader.Init(client.CreateFullPageLoader(), "http://url.com");
   EXPECT_FALSE(loader.is_partial_loader_active());
-  // Verify push mode is enabled and no read callback is waiting (push mode).
+  // Verify push mode is enabled on the initial loader.
   EXPECT_TRUE(client.full_page_loader_data()->IsPushModeEnabled());
+  // In push mode, there should be no read callback waiting on the initial
+  // loader (data is pushed).
   EXPECT_FALSE(client.full_page_loader_data()->IsWaitRead());
 }
 
