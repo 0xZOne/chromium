@@ -301,9 +301,8 @@ bool URLLoaderWrapperImpl::IsPushModeEnabled() const {
 }
 
 void URLLoaderWrapperImpl::DidFinishPushModeLoading(int result) {
-  if (on_load_complete_callback_) {
-    std::move(on_load_complete_callback_).Run(result);
-  }
+  DCHECK(on_load_complete_callback_);
+  std::move(on_load_complete_callback_).Run(result);
 }
 
 }  // namespace chrome_pdf

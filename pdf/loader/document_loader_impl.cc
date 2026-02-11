@@ -465,10 +465,8 @@ void DocumentLoaderImpl::OnDataReceived(base::span<const uint8_t> data) {
     DCHECK_LE(chunk_.data_size, DataStream::kChunkSize);
     const size_t new_chunk_data_len =
         std::min(DataStream::kChunkSize - chunk_.data_size, data.size());
-    UNSAFE_TODO({
-      memcpy(chunk_.chunk_data->data() + chunk_.data_size, data.data(),
-             new_chunk_data_len);
-    });
+    std::copy_n(data.begin(), new_chunk_data_len,
+                chunk_.chunk_data->begin() + chunk_.data_size);
     chunk_.data_size += new_chunk_data_len;
     if (chunk_.data_size == DataStream::kChunkSize ||
         (document_size > 0 && document_size <= EndOfCurrentChunk())) {
