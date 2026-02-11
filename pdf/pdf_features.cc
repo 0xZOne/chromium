@@ -36,6 +36,11 @@ BASE_FEATURE(kPdfPartialLoading, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPdfPortfolio, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// "Push-based loading" refers to pushing data directly to the document loader
+// without intermediate buffering and 2ms delays. This improves performance by
+// eliminating unnecessary data copies and timer delays.
+BASE_FEATURE(kPdfPushBasedLoading, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables PDF WebUI save to get PDF content from renderer in blocks.
 BASE_FEATURE(kPdfGetSaveDataInBlocks, base::FEATURE_DISABLED_BY_DEFAULT);
 

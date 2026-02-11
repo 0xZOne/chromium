@@ -74,7 +74,9 @@ DocumentLoaderImpl::DocumentLoaderImpl(Client* client)
     : client_(client),
       partial_loading_enabled_(
           base::FeatureList::IsEnabled(features::kPdfPartialLoading)),
-      buffer_(kReadBufferSize) {}
+      push_mode_enabled_(
+          base::FeatureList::IsEnabled(features::kPdfPushBasedLoading)),
+      buffer_(push_mode_enabled_ ? 0 : kReadBufferSize) {}
 
 DocumentLoaderImpl::~DocumentLoaderImpl() = default;
 
@@ -107,6 +109,7 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
 
   url_ = url;
   loader_ = std::move(loader);
+  multipart_chunk_index_initialized_ = false;
 
   if (!loader_->IsContentEncoded())
     chunk_stream_.set_eof_pos(std::max(0, loader_->GetContentLength()));
@@ -117,6 +120,7 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
       loader_->IsAcceptRangesBytes() && !loader_->IsContentEncoded() &&
       GetDocumentSize());
 
+  MaybeEnablePushMode();
   ReadMore();
   return true;
 }
@@ -254,6 +258,8 @@ void DocumentLoaderImpl::ContinueDownload() {
                next_request.length() * DataStream::kChunkSize);
 
   loader_ = client_->CreateURLLoader();
+  multipart_chunk_index_initialized_ = false;
+  MaybeEnablePushMode();
 
   loader_->OpenRange(url_, url_, start, length,
                      base::BindOnce(&DocumentLoaderImpl::DidOpenPartial,
@@ -296,6 +302,10 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
 }
 
 void DocumentLoaderImpl::ReadMore() {
+  // In push mode, data is pushed to us via callbacks, so no need to read.
+  if (push_mode_enabled_) {
+    return;
+  }
   loader_->ReadResponseBody(
       buffer_,
       base::BindOnce(&DocumentLoaderImpl::DidRead, weak_factory_.GetWeakPtr()));
@@ -406,6 +416,89 @@ void DocumentLoaderImpl::ReadComplete() {
   } else {
     client_->OnDocumentCanceled();
   }
+}
+
+void DocumentLoaderImpl::MaybeEnablePushMode() {
+  if (!push_mode_enabled_ || !loader_) {
+    return;
+  }
+  loader_->EnablePushMode(
+      base::BindRepeating(&DocumentLoaderImpl::OnDataReceived,
+                          weak_factory_.GetWeakPtr()),
+      base::BindOnce(&DocumentLoaderImpl::OnLoadComplete,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void DocumentLoaderImpl::OnDataReceived(base::span<const uint8_t> data) {
+  if (data.empty()) {
+    return;
+  }
+
+  // Handle multipart response if needed.
+  if (loader_->IsMultipart() && !multipart_chunk_index_initialized_) {
+    int start_pos = 0;
+    if (!loader_->GetByteRangeStart(&start_pos)) {
+      return ReadComplete();
+    }
+    DCHECK(!chunk_.chunk_data);
+    chunk_.chunk_index = chunk_stream_.GetChunkIndex(start_pos);
+    multipart_chunk_index_initialized_ = true;
+  }
+
+  // Process pushed data directly into chunks, similar to SaveBuffer but without
+  // intermediate buffer_.
+  const uint32_t document_size = GetDocumentSize();
+  bytes_received_ += data.size();
+  bool chunk_saved = false;
+  bool loading_pending_request = pending_requests_.Contains(chunk_.chunk_index);
+
+  while (!data.empty()) {
+    if (chunk_.data_size == 0) {
+      chunk_.chunk_data = std::make_unique<DataStream::ChunkData>();
+    }
+
+    const size_t new_chunk_data_len =
+        std::min(DataStream::kChunkSize - chunk_.data_size, data.size());
+    UNSAFE_TODO({
+      memcpy(chunk_.chunk_data->data() + chunk_.data_size, data.data(),
+             new_chunk_data_len);
+    });
+    chunk_.data_size += new_chunk_data_len;
+    if (chunk_.data_size == DataStream::kChunkSize ||
+        (document_size > 0 && document_size <= EndOfCurrentChunk())) {
+      pending_requests_.Subtract(
+          gfx::Range(chunk_.chunk_index, chunk_.chunk_index + 1));
+      SaveChunkData();
+      chunk_saved = true;
+    }
+
+    data = data.subspan(new_chunk_data_len);
+  }
+
+  client_->OnNewDataReceived();
+
+  if (IsDocumentComplete()) {
+    return;
+  }
+
+  if (chunk_saved && loading_pending_request &&
+      !pending_requests_.Contains(chunk_.chunk_index)) {
+    client_->OnPendingRequestComplete();
+  }
+}
+
+void DocumentLoaderImpl::OnLoadComplete(int result) {
+  if (result < 0) {
+    // An error occurred.
+    return ReadComplete();
+  }
+
+  // result == 0 means success (EOF).
+  loader_.reset();
+  if (!is_partial_loader_active_) {
+    return ReadComplete();
+  }
+  return ContinueDownload();
 }
 
 }  // namespace chrome_pdf
