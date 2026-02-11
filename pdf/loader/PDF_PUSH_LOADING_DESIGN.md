@@ -93,15 +93,15 @@ BASE_FEATURE(kPdfPushBasedLoading, base::FEATURE_DISABLED_BY_DEFAULT);
 ```cpp
 class URLLoaderWrapper {
  public:
-  // 数据推送回调接口
-  using DataPushedCallback =
+  // 数据接收回调接口
+  using OnDataReceivedCallback =
       base::RepeatingCallback<void(base::span<const uint8_t>)>;
   // 完成回调接口（result为0表示成功，负数表示错误）
-  using LoadingCompleteCallback = base::OnceCallback<void(int result)>;
+  using OnLoadCompleteCallback = base::OnceCallback<void(int result)>;
 
   // 启用push模式，设置数据接收回调
-  virtual void EnablePushMode(DataPushedCallback data_callback,
-                              LoadingCompleteCallback complete_callback) {}
+  virtual void EnablePushMode(OnDataReceivedCallback data_callback,
+                              OnLoadCompleteCallback complete_callback) {}
 
   // 返回是否启用了push模式
   virtual bool IsPushModeEnabled() const { return false; }
@@ -116,6 +116,7 @@ class URLLoaderWrapper {
 
 - 新增 push 模式相关成员变量
 - 实现 `EnablePushMode()` 和 `IsPushModeEnabled()`
+- 新增 `DidFinishPushModeLoading()` 处理push模式完成
 - Push模式下绕过2ms定时器，直接调用数据回调
 
 #### 3. UrlLoader修改
@@ -132,9 +133,9 @@ class URLLoaderWrapper {
 
 - 根据feature flag选择使用pull或push模式
 - 新增 `is_push_mode_enabled()` 访问器
-- 新增 `SetupPushModeIfEnabled()` 设置push模式
-- 新增 `OnDataPushed()` 处理推送的数据
-- 新增 `OnLoadingComplete()` 处理加载完成
+- 新增 `MaybeEnablePushMode()` 条件设置push模式
+- 新增 `OnDataReceived()` 处理接收的数据
+- 新增 `OnLoadComplete()` 处理加载完成
 - Push模式下：
   - 设置数据回调到URLLoaderWrapper
   - 数据直接从回调写入chunk_stream，绕过中间buffer_

@@ -168,13 +168,13 @@ void UrlLoader::Close() {
     AbortLoad(Result::kErrorAborted);
 }
 
-void UrlLoader::EnablePushMode(DataPushedCallback data_callback,
-                               LoadingCompleteCallback complete_callback) {
+void UrlLoader::EnablePushMode(OnDataReceivedCallback data_callback,
+                               OnLoadCompleteCallback complete_callback) {
   DCHECK(data_callback);
   DCHECK(complete_callback);
   push_mode_enabled_ = true;
-  push_data_callback_ = std::move(data_callback);
-  push_complete_callback_ = std::move(complete_callback);
+  on_data_received_callback_ = std::move(data_callback);
+  on_load_complete_callback_ = std::move(complete_callback);
 }
 
 // Modeled on `content::PepperURLLoaderHost::WillFollowRedirect()`.
@@ -227,7 +227,7 @@ void UrlLoader::DidReceiveData(base::span<const char> data) {
 
   // In push mode, directly push data to the callback without buffering.
   if (push_mode_enabled_) {
-    push_data_callback_.Run(base::as_bytes(data));
+    on_data_received_callback_.Run(base::as_bytes(data));
     return;
   }
 
@@ -249,8 +249,8 @@ void UrlLoader::DidFinishLoading() {
   SetLoadComplete(Result::kSuccess);
 
   // In push mode, call the complete callback.
-  if (push_mode_enabled_ && push_complete_callback_) {
-    std::move(push_complete_callback_).Run(Result::kSuccess);
+  if (push_mode_enabled_ && on_load_complete_callback_) {
+    std::move(on_load_complete_callback_).Run(Result::kSuccess);
     return;
   }
 
@@ -286,8 +286,8 @@ void UrlLoader::AbortLoad(Result result) {
   buffer_.clear();
 
   // In push mode, call the complete callback with the error.
-  if (push_mode_enabled_ && push_complete_callback_) {
-    std::move(push_complete_callback_).Run(result);
+  if (push_mode_enabled_ && on_load_complete_callback_) {
+    std::move(on_load_complete_callback_).Run(result);
     return;
   }
 

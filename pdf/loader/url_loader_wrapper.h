@@ -17,11 +17,11 @@ namespace chrome_pdf {
 class URLLoaderWrapper {
  public:
   // Callback for receiving data in push mode.
-  using DataPushedCallback =
+  using OnDataReceivedCallback =
       base::RepeatingCallback<void(base::span<const uint8_t>)>;
   // Callback for completion in push mode. The result is 0 for success,
   // negative for errors.
-  using LoadingCompleteCallback = base::OnceCallback<void(int result)>;
+  using OnLoadCompleteCallback = base::OnceCallback<void(int result)>;
 
   virtual ~URLLoaderWrapper() {}
 
@@ -73,8 +73,8 @@ class URLLoaderWrapper {
   // `data_callback` is called for each chunk of data received.
   // `complete_callback` is called when loading completes (successfully or
   // with an error).
-  virtual void EnablePushMode(DataPushedCallback data_callback,
-                              LoadingCompleteCallback complete_callback) {}
+  virtual void EnablePushMode(OnDataReceivedCallback data_callback,
+                              OnLoadCompleteCallback complete_callback) {}
 
   // Returns true if push mode is enabled for this loader.
   virtual bool IsPushModeEnabled() const { return false; }

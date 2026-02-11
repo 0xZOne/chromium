@@ -119,7 +119,7 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
       loader_->IsAcceptRangesBytes() && !loader_->IsContentEncoded() &&
       GetDocumentSize());
 
-  SetupPushModeIfEnabled();
+  MaybeEnablePushMode();
   ReadMore();
   return true;
 }
@@ -415,18 +415,18 @@ void DocumentLoaderImpl::ReadComplete() {
   }
 }
 
-void DocumentLoaderImpl::SetupPushModeIfEnabled() {
+void DocumentLoaderImpl::MaybeEnablePushMode() {
   if (!push_mode_enabled_ || !loader_) {
     return;
   }
   loader_->EnablePushMode(
-      base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
+      base::BindRepeating(&DocumentLoaderImpl::OnDataReceived,
                           weak_factory_.GetWeakPtr()),
-      base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
+      base::BindOnce(&DocumentLoaderImpl::OnLoadComplete,
                      weak_factory_.GetWeakPtr()));
 }
 
-void DocumentLoaderImpl::OnDataPushed(base::span<const uint8_t> data) {
+void DocumentLoaderImpl::OnDataReceived(base::span<const uint8_t> data) {
   if (data.empty()) {
     return;
   }
@@ -483,7 +483,7 @@ void DocumentLoaderImpl::OnDataPushed(base::span<const uint8_t> data) {
   }
 }
 
-void DocumentLoaderImpl::OnLoadingComplete(int result) {
+void DocumentLoaderImpl::OnLoadComplete(int result) {
   if (result < 0) {
     // An error occurred.
     return ReadComplete();

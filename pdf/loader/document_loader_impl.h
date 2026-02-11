@@ -78,11 +78,11 @@ class DocumentLoaderImpl : public DocumentLoader {
   uint32_t EndOfCurrentChunk() const;
 
   // Push mode callbacks.
-  void OnDataPushed(base::span<const uint8_t> data);
-  void OnLoadingComplete(int result);
+  void OnDataReceived(base::span<const uint8_t> data);
+  void OnLoadComplete(int result);
 
   // Setup push mode on the loader if enabled.
-  void SetupPushModeIfEnabled();
+  void MaybeEnablePushMode();
 
   const raw_ptr<Client> client_;
   std::string url_;

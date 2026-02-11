@@ -47,8 +47,8 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
                  base::OnceCallback<void(bool)> callback) override;
   void ReadResponseBody(base::span<uint8_t> buffer,
                         base::OnceCallback<void(int)> callback) override;
-  void EnablePushMode(DataPushedCallback data_callback,
-                      LoadingCompleteCallback complete_callback) override;
+  void EnablePushMode(OnDataReceivedCallback data_callback,
+                      OnLoadCompleteCallback complete_callback) override;
   bool IsPushModeEnabled() const override;
 
  private:
@@ -60,7 +60,7 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
   void ReadResponseBodyImpl(base::OnceCallback<void(int)> callback);
 
   // Called when push mode loading completes.
-  void OnPushModeComplete(int result);
+  void DidFinishPushModeLoading(int result);
 
   std::unique_ptr<UrlLoader> url_loader_;
 
@@ -79,8 +79,8 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
 
   // Push mode members.
   bool push_mode_enabled_ = false;
-  DataPushedCallback push_data_callback_;
-  LoadingCompleteCallback push_complete_callback_;
+  OnDataReceivedCallback on_data_received_callback_;
+  OnLoadCompleteCallback on_load_complete_callback_;
 
   base::WeakPtrFactory<URLLoaderWrapperImpl> weak_factory_{this};
 };

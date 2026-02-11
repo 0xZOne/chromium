@@ -122,19 +122,19 @@ class TestURLLoader : public URLLoaderWrapper {
     bool IsPushModeEnabled() const { return push_mode_enabled_; }
     void SetPushModeEnabled(bool enabled) { push_mode_enabled_ = enabled; }
     void SetPushCallbacks(
-        URLLoaderWrapper::DataPushedCallback data_callback,
-        URLLoaderWrapper::LoadingCompleteCallback complete_callback) {
-      push_data_callback_ = std::move(data_callback);
-      push_complete_callback_ = std::move(complete_callback);
+        URLLoaderWrapper::OnDataReceivedCallback data_callback,
+        URLLoaderWrapper::OnLoadCompleteCallback complete_callback) {
+      on_data_received_callback_ = std::move(data_callback);
+      on_load_complete_callback_ = std::move(complete_callback);
     }
     void PushData(base::span<const uint8_t> data) {
-      if (push_data_callback_) {
-        push_data_callback_.Run(data);
+      if (on_data_received_callback_) {
+        on_data_received_callback_.Run(data);
       }
     }
     void CompletePushMode(int result) {
-      if (push_complete_callback_) {
-        std::move(push_complete_callback_).Run(result);
+      if (on_load_complete_callback_) {
+        std::move(on_load_complete_callback_).Run(result);
       }
     }
 
@@ -156,8 +156,8 @@ class TestURLLoader : public URLLoaderWrapper {
 
     // Push mode members.
     bool push_mode_enabled_ = false;
-    URLLoaderWrapper::DataPushedCallback push_data_callback_;
-    URLLoaderWrapper::LoadingCompleteCallback push_complete_callback_;
+    URLLoaderWrapper::OnDataReceivedCallback on_data_received_callback_;
+    URLLoaderWrapper::OnLoadCompleteCallback on_load_complete_callback_;
   };
 
   explicit TestURLLoader(LoaderData* data) : data_(data) {
@@ -206,8 +206,8 @@ class TestURLLoader : public URLLoaderWrapper {
     data_->SetReadCallback(std::move(callback));
   }
 
-  void EnablePushMode(DataPushedCallback data_callback,
-                      LoadingCompleteCallback complete_callback) override {
+  void EnablePushMode(OnDataReceivedCallback data_callback,
+                      OnLoadCompleteCallback complete_callback) override {
     data_->SetPushModeEnabled(true);
     data_->SetPushCallbacks(std::move(data_callback),
                             std::move(complete_callback));
