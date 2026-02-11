@@ -735,6 +735,7 @@ TEST_F(UrlLoaderTest, PushModeNoBuffering) {
   // In push mode, buffer is empty, so read should not complete immediately
   // unless load is complete. This is a design decision - in push mode,
   // ReadResponseBody behavior depends on implementation.
+  EXPECT_EQ(-1, read_result);
 }
 
 TEST_F(UrlLoaderTest, PushModeFinishLoading) {

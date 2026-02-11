@@ -76,8 +76,11 @@ DocumentLoaderImpl::DocumentLoaderImpl(Client* client)
       partial_loading_enabled_(
           base::FeatureList::IsEnabled(features::kPdfPartialLoading)),
       push_mode_enabled_(
-          base::FeatureList::IsEnabled(features::kPdfPushBasedLoading)),
-      buffer_(push_mode_enabled_ ? 0 : kReadBufferSize) {}
+          base::FeatureList::IsEnabled(features::kPdfPushBasedLoading)) {
+  if (!push_mode_enabled_) {
+    buffer_.resize(kReadBufferSize);
+  }
+}
 
 DocumentLoaderImpl::~DocumentLoaderImpl() = default;
 
@@ -462,7 +465,6 @@ void DocumentLoaderImpl::OnDataReceived(base::span<const uint8_t> data) {
     DCHECK_LE(chunk_.data_size, DataStream::kChunkSize);
     const size_t new_chunk_data_len =
         std::min(DataStream::kChunkSize - chunk_.data_size, data.size());
-    DCHECK_LE(chunk_.data_size + new_chunk_data_len, DataStream::kChunkSize);
     UNSAFE_TODO({
       memcpy(chunk_.chunk_data->data() + chunk_.data_size, data.data(),
              new_chunk_data_len);
