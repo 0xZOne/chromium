@@ -42,6 +42,7 @@ class DocumentLoaderImpl : public DocumentLoader {
   // Exposed for unit tests.
   void SetPartialLoadingEnabled(bool enabled);
   bool is_partial_loader_active() const { return is_partial_loader_active_; }
+  bool is_push_mode_enabled() const { return push_mode_enabled_; }
 
  private:
   using DataStream = ChunkStream<kDefaultRequestSize>;
@@ -59,10 +60,10 @@ class DocumentLoaderImpl : public DocumentLoader {
   // Called by the completion callback of the document's URLLoader.
   void DidOpenPartial(bool success);
 
-  // Call to read data from the document's URLLoader.
+  // Call to read data from the document's URLLoader (pull mode).
   void ReadMore();
 
-  // Called by the completion callback of the document's URLLoader.
+  // Called by the completion callback of the document's URLLoader (pull mode).
   void DidRead(int32_t result);
 
   bool ShouldCancelLoading() const;
@@ -76,6 +77,13 @@ class DocumentLoaderImpl : public DocumentLoader {
 
   uint32_t EndOfCurrentChunk() const;
 
+  // Push mode callbacks.
+  void OnDataReceived(base::span<const uint8_t> data);
+  void OnLoadComplete(int result);
+
+  // Setup push mode on the loader if enabled.
+  void MaybeEnablePushMode();
+
   const raw_ptr<Client> client_;
   std::string url_;
   std::unique_ptr<URLLoaderWrapper> loader_;
@@ -83,6 +91,9 @@ class DocumentLoaderImpl : public DocumentLoader {
   DataStream chunk_stream_;
   bool partial_loading_enabled_;  // Default determined by `kPdfPartialLoading`.
   bool is_partial_loader_active_ = false;
+  bool push_mode_enabled_ = false;  // Default determined by `kPdfPushBasedLoading`.
+  // Tracks whether we've initialized the multipart chunk index in push mode.
+  bool multipart_chunk_index_initialized_ = false;
 
   std::vector<uint8_t> buffer_;
 

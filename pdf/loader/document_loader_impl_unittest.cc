@@ -118,6 +118,27 @@ class TestURLLoader : public URLLoaderWrapper {
       std::move(did_read_callback_).Run(result);
     }
 
+    // Push mode support.
+    bool IsPushModeEnabled() const { return push_mode_enabled_; }
+    void SetPushModeEnabled(bool enabled) { push_mode_enabled_ = enabled; }
+    void SetPushCallbacks(
+        URLLoaderWrapper::OnDataReceivedCallback data_callback,
+        URLLoaderWrapper::OnLoadCompleteCallback complete_callback) {
+      on_data_received_callback_ = std::move(data_callback);
+      on_load_complete_callback_ = std::move(complete_callback);
+    }
+    void PushData(base::span<const uint8_t> data) {
+      DCHECK(push_mode_enabled_);
+      if (on_data_received_callback_) {
+        on_data_received_callback_.Run(data);
+      }
+    }
+    void CompletePushMode(int result) {
+      if (on_load_complete_callback_) {
+        std::move(on_load_complete_callback_).Run(result);
+      }
+    }
+
    private:
     base::OnceCallback<void(bool)> did_open_callback_;
     base::OnceCallback<void(int)> did_read_callback_;
@@ -133,6 +154,11 @@ class TestURLLoader : public URLLoaderWrapper {
     int status_code_ = 0;
     bool closed_ = true;
     gfx::Range open_byte_range_ = gfx::Range::InvalidRange();
+
+    // Push mode members.
+    bool push_mode_enabled_ = false;
+    URLLoaderWrapper::OnDataReceivedCallback on_data_received_callback_;
+    URLLoaderWrapper::OnLoadCompleteCallback on_load_complete_callback_;
   };
 
   explicit TestURLLoader(LoaderData* data) : data_(data) {
@@ -179,6 +205,17 @@ class TestURLLoader : public URLLoaderWrapper {
   void ReadResponseBody(base::span<uint8_t> /*buffer*/,
                         base::OnceCallback<void(int)> callback) override {
     data_->SetReadCallback(std::move(callback));
+  }
+
+  void EnablePushMode(OnDataReceivedCallback data_callback,
+                      OnLoadCompleteCallback complete_callback) override {
+    data_->SetPushModeEnabled(true);
+    data_->SetPushCallbacks(std::move(data_callback),
+                            std::move(complete_callback));
+  }
+
+  bool IsPushModeEnabled() const override {
+    return data_->IsPushModeEnabled();
   }
 
  private:
@@ -1196,6 +1233,190 @@ TEST_F(DocumentLoaderImplTest, IgnoreDataMoreThanExpectedWithPartialAtFileEnd) {
   // The downloads should be finished.
   EXPECT_TRUE(client.full_page_loader_data()->closed());
   EXPECT_TRUE(client.partial_loader_data()->closed());
+}
+
+// Tests for push-based loading mode.
+
+class DocumentLoaderImplPushModeTest : public testing::Test {
+ protected:
+  DocumentLoaderImplPushModeTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kPdfPushBasedLoading},
+        /*disabled_features=*/{features::kPdfPartialLoading});
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeFeatureDefault) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kPdfPushBasedLoading);
+
+  // Test that push mode is disabled when feature is disabled (default).
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  EXPECT_FALSE(loader.is_push_mode_enabled());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeEnabled) {
+  // Test that push mode is enabled when feature is enabled.
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+  // Verify push mode is enabled on the loader.
+  EXPECT_TRUE(client.full_page_loader_data()->IsPushModeEnabled());
+}
+
+class DocumentLoaderImplPushModePartialLoadingTest : public testing::Test {
+ protected:
+  DocumentLoaderImplPushModePartialLoadingTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/
+        {features::kPdfPushBasedLoading, features::kPdfPartialLoading},
+        /*disabled_features=*/{});
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(DocumentLoaderImplPushModePartialLoadingTest,
+       PushModeEnabledForPartialLoader) {
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  client.full_page_loader_data()->set_content_length(kDefaultRequestSize * 20);
+
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+  loader.RequestData(17 * kDefaultRequestSize + 100, 10);
+
+  // Always send initial data from FullPageLoader to trigger partial loading.
+  client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+
+  EXPECT_TRUE(client.partial_loader_data()->IsWaitOpen());
+  EXPECT_TRUE(client.partial_loader_data()->IsPushModeEnabled());
+
+  client.partial_loader_data()->set_byte_range(
+      client.partial_loader_data()->open_byte_range());
+  client.partial_loader_data()->CallOpenCallback(/*success=*/true);
+
+  EXPECT_CALL(client, OnNewDataReceived()).Times(testing::AtLeast(1));
+  std::vector<uint8_t> test_data(kDefaultRequestSize, 0x44);
+  client.partial_loader_data()->PushData(test_data);
+  EXPECT_GT(loader.BytesReceived(), 0u);
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeReceiveData) {
+  NiceMock<MockClient> client;
+  DocumentLoaderImpl loader(&client);
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+
+  client.full_page_loader_data()->set_content_length(kDefaultRequestSize * 2);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Verify data is received via push mode.
+  EXPECT_CALL(client, OnNewDataReceived()).Times(testing::AtLeast(1));
+
+  // Push data to the loader.
+  std::vector<uint8_t> test_data(kDefaultRequestSize, 0x42);
+  client.full_page_loader_data()->PushData(test_data);
+
+  // Verify some data was received.
+  EXPECT_GT(loader.BytesReceived(), 0u);
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeCompleteDocument) {
+  NiceMock<MockClient> client;
+  DocumentLoaderImpl loader(&client);
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+
+  const uint32_t doc_size = kDefaultRequestSize * 2;
+  client.full_page_loader_data()->set_content_length(doc_size);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_CALL(client, OnNewDataReceived()).Times(testing::AtLeast(1));
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+
+  // Push all document data.
+  std::vector<uint8_t> test_data(doc_size, 0x42);
+  client.full_page_loader_data()->PushData(test_data);
+
+  // Complete the loading.
+  client.full_page_loader_data()->CompletePushMode(0);
+
+  EXPECT_TRUE(loader.IsDocumentComplete());
+  EXPECT_EQ(doc_size, loader.BytesReceived());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeError) {
+  NiceMock<MockClient> client;
+  DocumentLoaderImpl loader(&client);
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+
+  client.full_page_loader_data()->set_content_length(kDefaultRequestSize * 2);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_CALL(client, OnDocumentCanceled()).Times(1);
+
+  // Signal an error.
+  client.full_page_loader_data()->CompletePushMode(-1);
+
+  EXPECT_FALSE(loader.IsDocumentComplete());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeNoReadCallback) {
+  // Verify that in push mode, ReadResponseBody is not called (no polling).
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+
+  client.full_page_loader_data()->set_content_length(kDefaultRequestSize);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // In push mode, there should be no read callback waiting.
+  EXPECT_FALSE(client.full_page_loader_data()->IsWaitRead());
+}
+
+// Test that pull mode still works when push mode feature is disabled.
+class DocumentLoaderImplPullModeTest : public testing::Test {
+ protected:
+  DocumentLoaderImplPullModeTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kPdfPartialLoading},
+        /*disabled_features=*/{features::kPdfPushBasedLoading});
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(DocumentLoaderImplPullModeTest, PullModeEnabled) {
+  // Test that pull mode is enabled when push mode feature is disabled.
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  EXPECT_FALSE(loader.is_push_mode_enabled());
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+  // Verify push mode is NOT enabled on the loader.
+  EXPECT_FALSE(client.full_page_loader_data()->IsPushModeEnabled());
+  // Verify read callback is set (pull mode).
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+}
+
+TEST_F(DocumentLoaderImplPullModeTest, PullModeReceiveData) {
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  DocumentLoaderImpl loader(&client);
+  EXPECT_FALSE(loader.is_push_mode_enabled());
+
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Verify data is received via pull mode.
+  EXPECT_CALL(client, OnNewDataReceived()).Times(testing::AtLeast(1));
+
+  // Trigger read callback (simulating pull mode data reception).
+  client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+
+  // Verify some data was received.
+  EXPECT_GT(loader.BytesReceived(), 0u);
 }
 
 }  // namespace chrome_pdf
