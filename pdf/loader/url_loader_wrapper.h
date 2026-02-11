@@ -10,7 +10,7 @@
 #include <string>
 
 #include "base/containers/span.h"
-#include "base/functional/callback.h"
+#include "base/functional/callback_forward.h"
 
 namespace chrome_pdf {
 

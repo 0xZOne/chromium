@@ -92,6 +92,7 @@ class DocumentLoaderImpl : public DocumentLoader {
   bool partial_loading_enabled_;  // Default determined by `kPdfPartialLoading`.
   bool is_partial_loader_active_ = false;
   bool push_mode_enabled_ = false;  // Default determined by `kPdfPushBasedLoading`.
+  // Tracks whether we've initialized the multipart chunk index in push mode.
   bool multipart_chunk_index_initialized_ = false;
 
   std::vector<uint8_t> buffer_;
