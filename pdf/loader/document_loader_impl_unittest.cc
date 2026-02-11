@@ -1281,7 +1281,7 @@ class DocumentLoaderImplPushModePartialLoadingTest : public testing::Test {
 
 TEST_F(DocumentLoaderImplPushModePartialLoadingTest,
        PushModeEnabledForPartialLoader) {
-  TestClient client;
+  NiceMock<MockClient> client;
   client.SetCanUsePartialLoading();
   client.full_page_loader_data()->set_content_length(kDefaultRequestSize * 20);
 
@@ -1294,6 +1294,15 @@ TEST_F(DocumentLoaderImplPushModePartialLoadingTest,
 
   EXPECT_TRUE(client.partial_loader_data()->IsWaitOpen());
   EXPECT_TRUE(client.partial_loader_data()->IsPushModeEnabled());
+
+  client.partial_loader_data()->set_byte_range(
+      client.partial_loader_data()->open_byte_range());
+  client.partial_loader_data()->CallOpenCallback(/*success=*/true);
+
+  EXPECT_CALL(client, OnNewDataReceived()).Times(testing::AtLeast(1));
+  std::vector<uint8_t> test_data(kDefaultRequestSize, 0x44);
+  client.partial_loader_data()->PushData(test_data);
+  EXPECT_GT(loader.BytesReceived(), 0u);
 }
 
 TEST_F(DocumentLoaderImplPushModeTest, PushModeReceiveData) {

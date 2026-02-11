@@ -674,7 +674,12 @@ TEST_F(UrlLoaderTest, EnablePushMode) {
       }, &data_received),
       base::BindOnce([](int) {}));
 
+  loader_->Open(UrlRequest(), mock_open_callback_.Get());
+  loader_->DidReceiveResponse(blink::WebURLResponse());
+  loader_->DidReceiveData(kFakeData);
+
   EXPECT_TRUE(loader_->IsPushModeEnabled());
+  EXPECT_TRUE(data_received);
 }
 
 TEST_F(UrlLoaderTest, PushModeReceiveData) {

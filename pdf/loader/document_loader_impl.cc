@@ -16,6 +16,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/logging.h"
 #include "base/numerics/safe_math.h"
 #include "base/strings/string_util.h"
 #include "pdf/loader/result_codes.h"
@@ -438,6 +439,7 @@ void DocumentLoaderImpl::OnDataReceived(base::span<const uint8_t> data) {
   if (loader_->IsMultipart() && !multipart_chunk_index_initialized_) {
     int start_pos = 0;
     if (!loader_->GetByteRangeStart(&start_pos)) {
+      DLOG(ERROR) << "Failed to get byte range start for multipart response.";
       return ReadComplete();
     }
     DCHECK(!chunk_.chunk_data);
@@ -457,6 +459,7 @@ void DocumentLoaderImpl::OnDataReceived(base::span<const uint8_t> data) {
       chunk_.chunk_data = std::make_unique<DataStream::ChunkData>();
     }
 
+    DCHECK_LE(chunk_.data_size, DataStream::kChunkSize);
     const size_t new_chunk_data_len =
         std::min(DataStream::kChunkSize - chunk_.data_size, data.size());
     DCHECK_LE(chunk_.data_size + new_chunk_data_len, DataStream::kChunkSize);
