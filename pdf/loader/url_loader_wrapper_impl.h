@@ -60,7 +60,7 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
   void ReadResponseBodyImpl(base::OnceCallback<void(int)> callback);
 
   // Called when push mode loading completes.
-  void DidFinishPushModeLoading(int result);
+  void DidComplete(int result);
 
   std::unique_ptr<UrlLoader> url_loader_;
 

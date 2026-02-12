@@ -291,7 +291,7 @@ void URLLoaderWrapperImpl::EnablePushMode(
   // Pass the data callback directly to UrlLoader to avoid redundant copies.
   url_loader_->EnablePushMode(
       std::move(data_callback),
-      base::BindOnce(&URLLoaderWrapperImpl::DidFinishPushModeLoading,
+      base::BindOnce(&URLLoaderWrapperImpl::DidComplete,
                      weak_factory_.GetWeakPtr()));
 }
 
@@ -299,7 +299,7 @@ bool URLLoaderWrapperImpl::IsPushModeEnabled() const {
   return push_mode_enabled_;
 }
 
-void URLLoaderWrapperImpl::DidFinishPushModeLoading(int result) {
+void URLLoaderWrapperImpl::DidComplete(int result) {
   if (on_load_complete_callback_) {
     std::move(on_load_complete_callback_).Run(result);
   }

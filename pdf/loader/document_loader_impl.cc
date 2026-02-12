@@ -304,7 +304,7 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
 
 void DocumentLoaderImpl::ReadMore() {
   // In push mode, data is pushed via callbacks, so skip pull-based reading.
-  if (loader_ && loader_->IsPushModeEnabled()) {
+  if (push_mode_enabled_) {
     return;
   }
   loader_->ReadResponseBody(
