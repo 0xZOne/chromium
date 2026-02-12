@@ -299,10 +299,10 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
 }
 
 void DocumentLoaderImpl::ReadMore() {
-  // In push mode, data is pushed to us via callbacks on the push-mode-enabled
-  // loader. Partial loaders created by ContinueDownload() use pull mode, so
-  // only skip reading when the current loader has push mode enabled.
-  if (push_mode_enabled_ && loader_ && loader_->IsPushModeEnabled()) {
+  // In push mode, data is pushed to us via callbacks, so skip reading.
+  // Partial loaders created by ContinueDownload() use pull mode and won't
+  // have push mode enabled, so this check correctly allows them through.
+  if (loader_ && loader_->IsPushModeEnabled()) {
     return;
   }
   loader_->ReadResponseBody(
