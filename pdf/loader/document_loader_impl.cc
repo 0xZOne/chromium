@@ -272,6 +272,10 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
     return ReadComplete();
   }
 
+  // Enable push mode on the partial loader if the feature is enabled, so
+  // partial loading also benefits from push-based data delivery.
+  MaybeEnablePushMode();
+
   // Leave position untouched for multiparted responce for now, when we read the
   // data we'll get it.
   if (loader_->IsMultipart()) {
@@ -299,9 +303,7 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
 }
 
 void DocumentLoaderImpl::ReadMore() {
-  // In push mode, data is pushed to us via callbacks, so skip reading.
-  // Partial loaders created by ContinueDownload() use pull mode and won't
-  // have push mode enabled, so this check correctly allows them through.
+  // In push mode, data is pushed via callbacks, so skip pull-based reading.
   if (loader_ && loader_->IsPushModeEnabled()) {
     return;
   }

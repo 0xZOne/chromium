@@ -444,13 +444,15 @@ The following fixes have been applied to address the issues identified above:
   consistent behavior across both modes.
 
 ### P0-2/P0-3 Fix: Push mode with partial loading support
-- Push mode and partial loading now coexist correctly. The initial full-page
-  loader uses push mode (data pushed via callbacks), while partial loaders
-  created by `ContinueDownload()` use pull mode (ReadMore/ReadResponseBody).
-- `buffer_` is always allocated with `kReadBufferSize` so partial loaders can
-  use it.
+- Push mode and partial loading now coexist correctly. Both the initial
+  full-page loader and partial loaders created by `ContinueDownload()` use
+  push mode when the feature is enabled.
+- `DidOpenPartial()` calls `MaybeEnablePushMode()` after validating the
+  partial loader response, enabling push mode on each new partial loader.
+- `buffer_` is always allocated with `kReadBufferSize` as a fallback for
+  cases where push mode cannot be used (e.g., multipart responses).
 - `ReadMore()` only skips reading when the current loader has push mode
-  enabled (`loader_->IsPushModeEnabled()`), not unconditionally.
+  enabled (`loader_->IsPushModeEnabled()`).
 - `OnDataReceived()` calls `ContinueDownload()` after processing data, so
   partial loading can switch to range requests when needed.
 - `OnLoadComplete()` handles `is_partial_loader_active_` by calling
