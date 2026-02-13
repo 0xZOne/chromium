@@ -260,14 +260,22 @@ class TestClient : public DocumentLoader::Client {
     partial_loader_data_.set_byte_range(partial_loader_data_.open_byte_range());
     partial_loader_data_.CallOpenCallback(/*success=*/true);
     uint32_t length = partial_loader_data_.byte_range().length();
-    while (length > 0) {
-      constexpr uint32_t max_part_len = kDefaultRequestSize;
-      const uint32_t part_len = std::min(length, max_part_len);
-      partial_loader_data_.CallReadCallback(part_len);
-      length -= part_len;
-    }
-    if (partial_loader_data_.IsWaitRead()) {
-      partial_loader_data_.CallReadCallback(0);
+    if (partial_loader_data_.IsPushModeEnabled()) {
+      // In push mode, push data directly via callback.
+      std::vector<uint8_t> data(length, 0);
+      partial_loader_data_.PushData(data);
+      partial_loader_data_.CompletePushMode(0);
+    } else {
+      // In pull mode, use read callbacks.
+      while (length > 0) {
+        constexpr uint32_t max_part_len = kDefaultRequestSize;
+        const uint32_t part_len = std::min(length, max_part_len);
+        partial_loader_data_.CallReadCallback(part_len);
+        length -= part_len;
+      }
+      if (partial_loader_data_.IsWaitRead()) {
+        partial_loader_data_.CallReadCallback(0);
+      }
     }
   }
 
@@ -1393,6 +1401,166 @@ TEST_F(DocumentLoaderImplPullModeTest, PullModeReceiveData) {
 
   // Verify some data was received.
   EXPECT_GT(loader.BytesReceived(), 0u);
+}
+
+TEST_F(DocumentLoaderImplPullModeTest, PullModeCompleteWithPartial) {
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  client.full_page_loader_data()->set_content_length(kDefaultRequestSize * 20);
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+  loader.RequestData(19 * kDefaultRequestSize, kDefaultRequestSize);
+
+  // Always send initial data from FullPageLoader (pull mode).
+  client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+  EXPECT_TRUE(client.full_page_loader_data()->closed());
+
+  // Partial loader should use pull mode.
+  EXPECT_FALSE(client.partial_loader_data()->IsPushModeEnabled());
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+
+  client.SendAllPartialData();
+  client.SendAllPartialData();
+  EXPECT_TRUE(client.partial_loader_data()->closed());
+}
+
+TEST_F(DocumentLoaderImplPullModeTest, PullModeErrorDownload) {
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+
+  EXPECT_CALL(client, OnDocumentCanceled()).Times(1);
+  client.full_page_loader_data()->CallReadCallback(-3);
+  EXPECT_TRUE(client.full_page_loader_data()->closed());
+  EXPECT_FALSE(loader.IsDocumentComplete());
+}
+
+TEST_F(DocumentLoaderImplPullModeTest, PullModeCompleteNoContentLength) {
+  NiceMock<MockClient> client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+    client.full_page_loader_data()->CallReadCallback(1000);
+  }
+
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+  client.full_page_loader_data()->CallReadCallback(0);
+  EXPECT_EQ(10000ul, loader.GetDocumentSize());
+  EXPECT_TRUE(loader.IsDocumentComplete());
+}
+
+// Push mode: Complete document without partial loading.
+TEST_F(DocumentLoaderImplPushModeTest, PushModeCompleteWithoutPartial) {
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+  EXPECT_FALSE(client.full_page_loader_data()->closed());
+
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+
+  // Push all data at once.
+  const uint32_t doc_size = client.full_page_loader_data()->content_length();
+  std::vector<uint8_t> data(doc_size, 0);
+  client.full_page_loader_data()->PushData(data);
+
+  EXPECT_TRUE(loader.IsDocumentComplete());
+  EXPECT_TRUE(client.full_page_loader_data()->closed());
+}
+
+// Push mode: Complete with partial loading.
+TEST_F(DocumentLoaderImplPushModeTest, PushModeCompleteWithPartial) {
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  client.full_page_loader_data()->set_content_length(kDefaultRequestSize * 20);
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+  loader.RequestData(19 * kDefaultRequestSize, kDefaultRequestSize);
+
+  // Push initial data from full page loader.
+  std::vector<uint8_t> initial_data(kDefaultRequestSize, 0);
+  client.full_page_loader_data()->PushData(initial_data);
+  // Full page loader should be closed after switching to partial.
+  EXPECT_TRUE(client.full_page_loader_data()->closed());
+
+  // Partial loader should also use push mode.
+  EXPECT_TRUE(client.partial_loader_data()->IsPushModeEnabled());
+
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+
+  // Send all partial data (push mode aware).
+  client.SendAllPartialData();
+  client.SendAllPartialData();
+  EXPECT_TRUE(client.partial_loader_data()->closed());
+}
+
+// Push mode: Error on full document download.
+TEST_F(DocumentLoaderImplPushModeTest, PushModeErrorDownload) {
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_CALL(client, OnDocumentCanceled()).Times(1);
+  client.full_page_loader_data()->CompletePushMode(-3);
+  EXPECT_TRUE(client.full_page_loader_data()->closed());
+  EXPECT_FALSE(loader.IsDocumentComplete());
+}
+
+// Push mode: Complete with no content length (unknown document size).
+TEST_F(DocumentLoaderImplPushModeTest, PushModeCompleteNoContentLength) {
+  NiceMock<MockClient> client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Push data in chunks.
+  for (int i = 0; i < 10; ++i) {
+    std::vector<uint8_t> data(1000, 0);
+    client.full_page_loader_data()->PushData(data);
+  }
+
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+  // Signal completion.
+  client.full_page_loader_data()->CompletePushMode(0);
+  EXPECT_EQ(10000ul, loader.GetDocumentSize());
+  EXPECT_TRUE(loader.IsDocumentComplete());
+}
+
+// Push mode: Client complete callbacks.
+TEST_F(DocumentLoaderImplPushModeTest, PushModeClientCompleteCallbacks) {
+  NiceMock<MockClient> client;
+  const uint32_t doc_size = kDefaultRequestSize * 2;
+  client.full_page_loader_data()->set_content_length(doc_size);
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_CALL(client, OnNewDataReceived()).Times(testing::AtLeast(1));
+  EXPECT_CALL(client, OnDocumentComplete()).Times(1);
+
+  std::vector<uint8_t> data(doc_size, 0);
+  client.full_page_loader_data()->PushData(data);
+
+  EXPECT_TRUE(loader.IsDocumentComplete());
+}
+
+// Push mode: Client cancel callback on error.
+TEST_F(DocumentLoaderImplPushModeTest, PushModeClientCancelCallback) {
+  NiceMock<MockClient> client;
+  client.full_page_loader_data()->set_content_length(kDefaultRequestSize * 2);
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Push some data, but not all.
+  std::vector<uint8_t> data(kDefaultRequestSize, 0);
+  client.full_page_loader_data()->PushData(data);
+
+  EXPECT_CALL(client, OnDocumentCanceled()).Times(1);
+  client.full_page_loader_data()->CompletePushMode(-1);
+  EXPECT_FALSE(loader.IsDocumentComplete());
 }
 
 }  // namespace chrome_pdf
