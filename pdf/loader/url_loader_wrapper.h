@@ -74,10 +74,10 @@ class URLLoaderWrapper {
   // `complete_callback` is called when loading completes (successfully or
   // with an error).
   virtual void EnablePushMode(OnDataReceivedCallback data_callback,
-                              OnLoadCompleteCallback complete_callback) {}
+                              OnLoadCompleteCallback complete_callback);
 
   // Returns true if push mode is enabled for this loader.
-  virtual bool IsPushModeEnabled() const { return false; }
+  virtual bool IsPushModeEnabled() const;
 };
 
 }  // namespace chrome_pdf

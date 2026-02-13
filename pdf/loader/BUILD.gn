@@ -28,6 +28,7 @@ source_set("loader") {
     "range_set.cc",
     "range_set.h",
     "url_loader.cc",
+    "url_loader_wrapper.cc",
     "url_loader_wrapper.h",
     "url_loader_wrapper_impl.cc",
   ]
