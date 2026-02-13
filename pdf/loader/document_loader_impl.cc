@@ -462,8 +462,14 @@ void DocumentLoaderImpl::OnLoadComplete(int result) {
   }
 
   // result == 0 means success (EOF).
+  // In push mode, OnDataReceived() may have already completed the document
+  // and called ReadComplete(). If so, nothing more to do.
+  if (IsDocumentComplete()) {
+    return;
+  }
+
   loader_.reset();
-  if (!is_partial_loader_active_ || IsDocumentComplete()) {
+  if (!is_partial_loader_active_) {
     return ReadComplete();
   }
   return ContinueDownload();
