@@ -7914,6 +7914,10 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kPdfUseSkiaRendererDescription, kOsDesktop,
      FEATURE_VALUE_TYPE(chrome_pdf::features::kPdfUseSkiaRenderer)},
 
+    {"pdf-push-based-loading", flag_descriptions::kPdfPushBasedLoadingName,
+     flag_descriptions::kPdfPushBasedLoadingDescription, kOsDesktop,
+     FEATURE_VALUE_TYPE(chrome_pdf::features::kPdfPushBasedLoading)},
+
 #if BUILDFLAG(ENABLE_PDF_INK2)
     {"pdf-ink2", flag_descriptions::kPdfInk2Name,
      flag_descriptions::kPdfInk2Description, kOsDesktop,

@@ -11,7 +11,7 @@
 #include <string>
 
 #include "base/containers/span.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_span.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
@@ -47,6 +47,9 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
                  base::OnceCallback<void(bool)> callback) override;
   void ReadResponseBody(base::span<uint8_t> buffer,
                         base::OnceCallback<void(int)> callback) override;
+  void EnablePushMode(OnDataReceivedCallback data_callback,
+                      OnLoadCompleteCallback complete_callback) override;
+  bool IsPushModeEnabled() const override;
 
  private:
   void SetHeadersFromLoader();
@@ -55,6 +58,9 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
   void DidRead(base::OnceCallback<void(int)> callback, int32_t result);
 
   void ReadResponseBodyImpl(base::OnceCallback<void(int)> callback);
+
+  // Called when push mode loading completes.
+  void DidComplete(int result);
 
   std::unique_ptr<UrlLoader> url_loader_;
 
@@ -70,6 +76,13 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
   bool multi_part_processed_ = false;
 
   base::OneShotTimer read_starter_;
+
+  // Push mode members.
+  bool push_mode_enabled_ = false;
+  // Note: The data callback is passed directly to UrlLoader and not stored
+  // here, to avoid redundant copies. Only the complete callback is stored
+  // for forwarding.
+  OnLoadCompleteCallback on_load_complete_callback_;
 
   base::WeakPtrFactory<URLLoaderWrapperImpl> weak_factory_{this};
 };
