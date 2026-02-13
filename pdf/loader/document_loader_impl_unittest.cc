@@ -14,6 +14,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/timer/elapsed_timer.h"
 #include "pdf/loader/url_loader_wrapper.h"
 #include "pdf/pdf_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -1575,6 +1576,60 @@ TEST_F(DocumentLoaderImplPushModeTest, PushModeClientCancelCallback) {
   EXPECT_CALL(client, OnDocumentCanceled()).Times(1);
   client.full_page_loader_data()->CompletePushMode(-1);
   EXPECT_FALSE(loader.IsDocumentComplete());
+}
+
+// Performance comparison: measures data throughput for push vs pull modes.
+// This test loads a large document (100MB) and reports the elapsed time for
+// each mode. Run with --gtest_print_time=1 to see timing.
+TEST_F(DocumentLoaderImplPushModeTest, PushModeLargeDocumentPerformance) {
+  constexpr uint32_t kDocSize = 100 * 1024 * 1024;  // 100MB
+  constexpr uint32_t kChunkSize = 64 * 1024;         // 64KB per push
+
+  NiceMock<MockClient> client;
+  client.full_page_loader_data()->set_content_length(kDocSize);
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  std::vector<uint8_t> chunk(kChunkSize, 0x42);
+
+  base::ElapsedTimer timer;
+  uint32_t remaining = kDocSize;
+  while (remaining > 0) {
+    uint32_t push_size = std::min(remaining, kChunkSize);
+    client.full_page_loader_data()->PushData(
+        base::span<const uint8_t>(chunk).first(push_size));
+    remaining -= push_size;
+  }
+  base::TimeDelta push_elapsed = timer.Elapsed();
+
+  EXPECT_TRUE(loader.IsDocumentComplete());
+  LOG(INFO) << "Push mode: " << kDocSize / 1024 / 1024 << "MB in "
+            << push_elapsed.InMillisecondsF() << "ms ("
+            << (kDocSize / 1024.0 / 1024.0) /
+                   push_elapsed.InSecondsF()
+            << " MB/s)";
+}
+
+TEST_F(DocumentLoaderImplPullModeTest, PullModeLargeDocumentPerformance) {
+  constexpr uint32_t kDocSize = 100 * 1024 * 1024;  // 100MB
+
+  NiceMock<MockClient> client;
+  client.full_page_loader_data()->set_content_length(kDocSize);
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  base::ElapsedTimer timer;
+  while (client.full_page_loader_data()->IsWaitRead()) {
+    client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+  }
+  base::TimeDelta pull_elapsed = timer.Elapsed();
+
+  EXPECT_TRUE(loader.IsDocumentComplete());
+  LOG(INFO) << "Pull mode: " << kDocSize / 1024 / 1024 << "MB in "
+            << pull_elapsed.InMillisecondsF() << "ms ("
+            << (kDocSize / 1024.0 / 1024.0) /
+                   pull_elapsed.InSecondsF()
+            << " MB/s)";
 }
 
 }  // namespace chrome_pdf

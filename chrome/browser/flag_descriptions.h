@@ -8140,6 +8140,12 @@ inline constexpr char kPdfUseSkiaRendererDescription[] =
     "Use Skia as the PDF renderer. This flag will have no effect if the "
     "renderer choice is controlled by an enterprise policy.";
 
+inline constexpr char kPdfPushBasedLoadingName[] = "PDF push-based loading";
+inline constexpr char kPdfPushBasedLoadingDescription[] =
+    "Enables push-based data delivery for PDF loading, which eliminates "
+    "unnecessary data copies and timer delays. This can significantly improve "
+    "PDF loading performance, especially for local files.";
+
 inline constexpr char kWebXrProjectionLayersName[] = "WebXR Projection Layers";
 inline constexpr char kWebXrProjectionLayersDescription[] =
     "Enables use of XRProjectionLayers.";
