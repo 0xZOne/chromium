@@ -463,7 +463,7 @@ void DocumentLoaderImpl::OnLoadComplete(int result) {
 
   // result == 0 means success (EOF).
   loader_.reset();
-  if (!is_partial_loader_active_) {
+  if (!is_partial_loader_active_ || IsDocumentComplete()) {
     return ReadComplete();
   }
   return ContinueDownload();
