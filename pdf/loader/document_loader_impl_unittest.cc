@@ -1487,14 +1487,28 @@ TEST_F(DocumentLoaderImplPushModeTest, PushModeCompleteWithPartial) {
   // Full page loader should be closed after switching to partial.
   EXPECT_TRUE(client.full_page_loader_data()->closed());
 
-  // Partial loader should also use push mode.
+  // Trigger the partial loader open callback — this calls DidOpenPartial()
+  // which enables push mode on the partial loader.
+  EXPECT_TRUE(client.partial_loader_data()->IsWaitOpen());
+  client.partial_loader_data()->set_byte_range(
+      client.partial_loader_data()->open_byte_range());
+  client.partial_loader_data()->CallOpenCallback(/*success=*/true);
+
+  // Now partial loader should have push mode enabled.
   EXPECT_TRUE(client.partial_loader_data()->IsPushModeEnabled());
 
   EXPECT_CALL(client, OnDocumentComplete()).Times(1);
 
-  // Send all partial data (push mode aware).
-  client.SendAllPartialData();
-  client.SendAllPartialData();
+  // Push remaining partial data.
+  uint32_t length = client.partial_loader_data()->byte_range().length();
+  std::vector<uint8_t> partial_data(length, 0);
+  client.partial_loader_data()->PushData(partial_data);
+  client.partial_loader_data()->CompletePushMode(0);
+
+  // Send next partial range if needed.
+  if (client.partial_loader_data()->IsWaitOpen()) {
+    client.SendAllPartialData();
+  }
   EXPECT_TRUE(client.partial_loader_data()->closed());
 }
 
