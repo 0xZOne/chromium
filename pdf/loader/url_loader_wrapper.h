@@ -59,6 +59,24 @@ class URLLoaderWrapper {
   // This function might perform a partial read.
   virtual void ReadResponseBody(base::span<uint8_t> buffer,
                                 base::OnceCallback<void(int)> callback) = 0;
+
+  // Solution 2: Direct push mode at UrlLoader level.
+  // Push mode interface where data is pushed directly from UrlLoader without
+  // intermediate buffering. This bypasses the internal buffer completely.
+  using OnDataCallback =
+      base::RepeatingCallback<void(base::span<const char> data)>;
+  using OnCompleteCallback = base::OnceCallback<void(int result)>;
+
+  // Set push mode callbacks on the underlying UrlLoader. Must be called
+  // BEFORE OpenRange() is called. When push mode is active, data is pushed
+  // directly from UrlLoader::DidReceiveData() to the callback, completely
+  // bypassing the internal buffer and the 2ms read delay.
+  // After calling this, ReadResponseBody() should not be used.
+  virtual void SetPushModeCallbacks(OnDataCallback on_data,
+                                    OnCompleteCallback on_complete) = 0;
+
+  // Returns true if push mode callbacks have been set.
+  virtual bool IsPushModeEnabled() const = 0;
 };
 
 }  // namespace chrome_pdf

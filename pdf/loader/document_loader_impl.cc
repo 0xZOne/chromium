@@ -74,6 +74,8 @@ DocumentLoaderImpl::DocumentLoaderImpl(Client* client)
     : client_(client),
       partial_loading_enabled_(
           base::FeatureList::IsEnabled(features::kPdfPartialLoading)),
+      push_mode_enabled_(
+          base::FeatureList::IsEnabled(features::kPdfPushBasedLoading)),
       buffer_(kReadBufferSize) {}
 
 DocumentLoaderImpl::~DocumentLoaderImpl() = default;
@@ -117,6 +119,11 @@ bool DocumentLoaderImpl::Init(std::unique_ptr<URLLoaderWrapper> loader,
       loader_->IsAcceptRangesBytes() && !loader_->IsContentEncoded() &&
       GetDocumentSize());
 
+  // For the initial load, the loader is already opened (from HandleDocumentLoad),
+  // so we cannot use UrlLoader's push mode which requires SetPushModeCallbacks()
+  // to be called before Open(). We use the regular pull mode for the initial load.
+  // Push mode (Solution 2) will be used for partial loads where we create a new
+  // loader and can set push callbacks before OpenRange().
   ReadMore();
   return true;
 }
@@ -216,8 +223,14 @@ bool DocumentLoaderImpl::ShouldCancelLoading() const {
 }
 
 void DocumentLoaderImpl::ContinueDownload() {
-  if (!ShouldCancelLoading())
+  if (!ShouldCancelLoading()) {
+    if (push_mode_enabled_) {
+      // In push mode, data will continue to be pushed via callbacks.
+      // No action needed here.
+      return;
+    }
     return ReadMore();
+  }
 
   DCHECK(partial_loading_enabled_);
   DCHECK(!IsDocumentComplete());
@@ -255,6 +268,16 @@ void DocumentLoaderImpl::ContinueDownload() {
 
   loader_ = client_->CreateURLLoader();
 
+  // Solution 2: Set push mode callbacks BEFORE OpenRange() so that UrlLoader
+  // can push data directly without buffering.
+  if (push_mode_enabled_) {
+    loader_->SetPushModeCallbacks(
+        base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
+                            weak_factory_.GetWeakPtr()),
+        base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
+                       weak_factory_.GetWeakPtr()));
+  }
+
   loader_->OpenRange(url_, url_, start, length,
                      base::BindOnce(&DocumentLoaderImpl::DidOpenPartial,
                                     weak_factory_.GetWeakPtr()));
@@ -273,7 +296,13 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
   // data we'll get it.
   if (loader_->IsMultipart()) {
     // Needs more data to calc chunk index.
-    return ReadMore();
+    // In push mode (Solution 2), callbacks were already set before OpenRange(),
+    // so data is already being pushed. In pull mode, we need to start reading.
+    if (!push_mode_enabled_) {
+      ReadMore();
+    }
+    // In push mode, data will arrive via OnDataPushed callbacks.
+    return;
   }
 
   // Need to make sure that the server returned a byte-range, since it's
@@ -292,7 +321,13 @@ void DocumentLoaderImpl::DidOpenPartial(bool success) {
   } else {
     SetPartialLoadingEnabled(false);
   }
-  return ContinueDownload();
+
+  // In push mode (Solution 2), callbacks were set before OpenRange(),
+  // so data is already being pushed. In pull mode, continue downloading.
+  if (!push_mode_enabled_) {
+    ContinueDownload();
+  }
+  // In push mode, data will arrive via OnDataPushed callbacks.
 }
 
 void DocumentLoaderImpl::ReadMore() {
@@ -406,6 +441,132 @@ void DocumentLoaderImpl::ReadComplete() {
   } else {
     client_->OnDocumentCanceled();
   }
+}
+
+void DocumentLoaderImpl::OnDataPushed(base::span<const char> data) {
+  DCHECK(push_mode_enabled_);
+
+  if (loader_->IsMultipart()) {
+    int start_pos = 0;
+    if (!loader_->GetByteRangeStart(&start_pos)) {
+      ReadComplete();
+      return;
+    }
+    DCHECK(!chunk_.chunk_data);
+    chunk_.chunk_index = chunk_stream_.GetChunkIndex(start_pos);
+  }
+
+  if (!SavePushedData(data)) {
+    return;  // Continue receiving more data.
+  }
+
+  if (IsDocumentComplete()) {
+    ReadComplete();
+    return;
+  }
+
+  // For partial loading, check if we should continue with the current loader
+  // or start a new partial request.
+  if (partial_loading_enabled_ && ShouldCancelLoading()) {
+    // Close current loader and start new partial request.
+    loader_.reset();
+    chunk_.Clear();
+    is_partial_loader_active_ = true;
+
+    // Start the next partial request if needed.
+    if (!IsDocumentComplete() && !pending_requests_.IsEmpty()) {
+      const size_t range_start = pending_requests_.First().start();
+      RangeSet candidates_for_request(
+          gfx::Range(range_start, chunk_stream_.total_chunks_count()));
+      candidates_for_request.Subtract(chunk_stream_.filled_chunks());
+      if (!candidates_for_request.IsEmpty()) {
+        gfx::Range next_request = candidates_for_request.First();
+
+        const size_t start = next_request.start() * DataStream::kChunkSize;
+        const size_t length =
+            std::min(GetDocumentSize() - start,
+                     next_request.length() * DataStream::kChunkSize);
+
+        loader_ = client_->CreateURLLoader();
+
+        // Solution 2: Set push mode callbacks BEFORE OpenRange().
+        loader_->SetPushModeCallbacks(
+            base::BindRepeating(&DocumentLoaderImpl::OnDataPushed,
+                                weak_factory_.GetWeakPtr()),
+            base::BindOnce(&DocumentLoaderImpl::OnLoadingComplete,
+                           weak_factory_.GetWeakPtr()));
+
+        loader_->OpenRange(
+            url_, url_, start, length,
+            base::BindOnce(&DocumentLoaderImpl::DidOpenPartial,
+                           weak_factory_.GetWeakPtr()));
+      }
+    }
+  }
+}
+
+void DocumentLoaderImpl::OnLoadingComplete(int result) {
+  DCHECK(push_mode_enabled_);
+
+  if (result < 0) {
+    // An error occurred.
+    ReadComplete();
+    return;
+  }
+
+  // result == 0 means loading finished successfully.
+  loader_.reset();
+
+  if (!is_partial_loader_active_) {
+    ReadComplete();
+    return;
+  }
+
+  // For partial loading, continue with the next chunk.
+  ContinueDownload();
+}
+
+bool DocumentLoaderImpl::SavePushedData(base::span<const char> data) {
+  const uint32_t document_size = GetDocumentSize();
+  bytes_received_ += data.size();
+  bool chunk_saved = false;
+  bool loading_pending_request = pending_requests_.Contains(chunk_.chunk_index);
+
+  while (!data.empty()) {
+    if (chunk_.data_size == 0)
+      chunk_.chunk_data = std::make_unique<DataStream::ChunkData>();
+
+    const size_t new_chunk_data_len =
+        std::min(DataStream::kChunkSize - chunk_.data_size, data.size());
+    UNSAFE_TODO({
+      memcpy(chunk_.chunk_data->data() + chunk_.data_size, data.data(),
+             new_chunk_data_len);
+    });
+    chunk_.data_size += new_chunk_data_len;
+    if (chunk_.data_size == DataStream::kChunkSize ||
+        (document_size > 0 && document_size <= EndOfCurrentChunk())) {
+      pending_requests_.Subtract(
+          gfx::Range(chunk_.chunk_index, chunk_.chunk_index + 1));
+      SaveChunkData();
+      chunk_saved = true;
+    }
+
+    data = data.subspan(new_chunk_data_len);
+  }
+
+  client_->OnNewDataReceived();
+
+  if (IsDocumentComplete())
+    return true;
+
+  if (!chunk_saved)
+    return false;
+
+  if (loading_pending_request &&
+      !pending_requests_.Contains(chunk_.chunk_index)) {
+    client_->OnPendingRequestComplete();
+  }
+  return true;
 }
 
 }  // namespace chrome_pdf

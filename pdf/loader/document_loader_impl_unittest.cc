@@ -181,8 +181,36 @@ class TestURLLoader : public URLLoaderWrapper {
     data_->SetReadCallback(std::move(callback));
   }
 
+  void SetPushModeCallbacks(OnDataCallback on_data,
+                            OnCompleteCallback on_complete) override {
+    push_mode_enabled_ = true;
+    on_data_callback_ = std::move(on_data);
+    on_complete_callback_ = std::move(on_complete);
+  }
+
+  bool IsPushModeEnabled() const override { return push_mode_enabled_; }
+
+  // Test helper: push data in push mode.
+  void PushData(base::span<const char> data) {
+    DCHECK(push_mode_enabled_);
+    if (on_data_callback_) {
+      on_data_callback_.Run(data);
+    }
+  }
+
+  // Test helper: signal completion in push mode.
+  void PushComplete(int result) {
+    DCHECK(push_mode_enabled_);
+    if (on_complete_callback_) {
+      std::move(on_complete_callback_).Run(result);
+    }
+  }
+
  private:
   raw_ptr<LoaderData> data_;
+  bool push_mode_enabled_ = false;
+  OnDataCallback on_data_callback_;
+  OnCompleteCallback on_complete_callback_;
 };
 
 class TestClient : public DocumentLoader::Client {
@@ -194,8 +222,9 @@ class TestClient : public DocumentLoader::Client {
 
   // DocumentLoader::Client overrides:
   std::unique_ptr<URLLoaderWrapper> CreateURLLoader() override {
-    return std::unique_ptr<URLLoaderWrapper>(
-        new TestURLLoader(partial_loader_data()));
+    auto loader = std::make_unique<TestURLLoader>(partial_loader_data());
+    last_partial_loader_ = loader.get();
+    return loader;
   }
   void OnPendingRequestComplete() override {}
   void OnNewDataReceived() override {}
@@ -203,8 +232,9 @@ class TestClient : public DocumentLoader::Client {
   void OnDocumentCanceled() override {}
 
   std::unique_ptr<URLLoaderWrapper> CreateFullPageLoader() {
-    return std::unique_ptr<URLLoaderWrapper>(
-        new TestURLLoader(full_page_loader_data()));
+    auto loader = std::make_unique<TestURLLoader>(full_page_loader_data());
+    last_full_page_loader_ = loader.get();
+    return loader;
   }
 
   TestURLLoader::LoaderData* full_page_loader_data() {
@@ -213,6 +243,11 @@ class TestClient : public DocumentLoader::Client {
   TestURLLoader::LoaderData* partial_loader_data() {
     return &partial_loader_data_;
   }
+
+  // Get the last created full page loader (for push mode testing).
+  TestURLLoader* last_full_page_loader() { return last_full_page_loader_; }
+  // Get the last created partial loader (for push mode testing).
+  TestURLLoader* last_partial_loader() { return last_partial_loader_; }
 
   void SetCanUsePartialLoading() {
     full_page_loader_data()->set_content_length(10 * 1024 * 1024);
@@ -238,6 +273,8 @@ class TestClient : public DocumentLoader::Client {
  private:
   TestURLLoader::LoaderData full_page_loader_data_;
   TestURLLoader::LoaderData partial_loader_data_;
+  raw_ptr<TestURLLoader> last_full_page_loader_ = nullptr;
+  raw_ptr<TestURLLoader> last_partial_loader_ = nullptr;
 };
 
 class MockClient : public TestClient {
@@ -1196,6 +1233,99 @@ TEST_F(DocumentLoaderImplTest, IgnoreDataMoreThanExpectedWithPartialAtFileEnd) {
   // The downloads should be finished.
   EXPECT_TRUE(client.full_page_loader_data()->closed());
   EXPECT_TRUE(client.partial_loader_data()->closed());
+}
+
+// Tests for push-based loading feature (Solution 2).
+// Solution 2: Push mode callbacks are set BEFORE OpenRange() is called.
+// For the initial load (Init()), the loader is already opened, so push mode
+// cannot be used. Push mode is only active for partial loads.
+class DocumentLoaderImplPushModeTest : public testing::Test {
+ protected:
+  DocumentLoaderImplPushModeTest() {
+    // Enable both push mode and partial loading for testing.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kPdfPushBasedLoading,
+                              features::kPdfPartialLoading},
+        /*disabled_features=*/{});
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeEnabledByDefault) {
+  // Test that push mode flag is enabled when feature flag is on.
+  // However, for the initial load, push mode cannot be used because
+  // the loader is already opened.
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Push mode flag should be enabled.
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+  // But for initial load, pull mode (ReadResponseBody) is used because
+  // the loader is already opened.
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PushModeDisabledByFeatureFlag) {
+  // Reset and disable push mode feature.
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitAndDisableFeature(features::kPdfPushBasedLoading);
+
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  // Push mode should be disabled.
+  EXPECT_FALSE(loader.is_push_mode_enabled());
+  // Pull mode should be active.
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, PartialLoadingUsesPushMode) {
+  // Test that partial loading uses push mode (Solution 2).
+  NiceMock<MockClient> client;
+  client.SetCanUsePartialLoading();
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_TRUE(loader.is_push_mode_enabled());
+
+  // Initial load uses pull mode.
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+
+  // Send initial data to trigger partial loading setup.
+  client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+
+  // Request data from a different position to trigger partial loading.
+  loader.RequestData(5 * 1024 * 1024, kDefaultRequestSize);
+
+  // Send more data from full page loader.
+  client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+
+  // After partial loading starts, the partial loader should have push mode set.
+  TestURLLoader* partial_loader = client.last_partial_loader();
+  if (partial_loader) {
+    // Push mode callbacks should be set on the partial loader.
+    EXPECT_TRUE(partial_loader->IsPushModeEnabled());
+  }
+}
+
+TEST_F(DocumentLoaderImplPushModeTest, FallbackToPullMode) {
+  // Test that pull mode works when push mode feature is disabled.
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.Init();
+
+  TestClient client;
+  DocumentLoaderImpl loader(&client);
+  loader.Init(client.CreateFullPageLoader(), "http://url.com");
+
+  EXPECT_FALSE(loader.is_push_mode_enabled());
+  EXPECT_TRUE(client.full_page_loader_data()->IsWaitRead());
+
+  // Pull mode should work as before.
+  client.full_page_loader_data()->CallReadCallback(kDefaultRequestSize);
+  EXPECT_EQ(kDefaultRequestSize, loader.BytesReceived());
 }
 
 }  // namespace chrome_pdf

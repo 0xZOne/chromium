@@ -280,4 +280,29 @@ void URLLoaderWrapperImpl::SetHeadersFromLoader() {
   ParseHeaders(url_loader_->response().headers);
 }
 
+void URLLoaderWrapperImpl::SetPushModeCallbacks(OnDataCallback on_data,
+                                                OnCompleteCallback on_complete) {
+  // Solution 2: Set push mode callbacks directly on UrlLoader.
+  // This must be called BEFORE OpenRange() so that UrlLoader knows to
+  // push data directly via DidReceiveData() instead of buffering.
+  //
+  // UrlLoader's DidReceiveData provides base::span<const char>.
+  // DocumentLoaderImpl::OnDataPushed expects base::span<const char> via wrapper.
+  // The URLLoaderWrapper::OnDataCallback takes base::span<const char>.
+  // So we can directly pass through to UrlLoader.
+
+  // Convert Result to int for the completion callback.
+  auto result_to_int_adapter =
+      base::BindOnce([](OnCompleteCallback callback, Result result) {
+        callback.Run(static_cast<int>(result));
+      }, std::move(on_complete));
+
+  url_loader_->SetPushModeCallbacks(std::move(on_data),
+                                    std::move(result_to_int_adapter));
+}
+
+bool URLLoaderWrapperImpl::IsPushModeEnabled() const {
+  return url_loader_->is_push_mode();
+}
+
 }  // namespace chrome_pdf

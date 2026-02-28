@@ -135,6 +135,20 @@ class UrlLoader final : public blink::WebAssociatedURLLoaderClient {
                         base::OnceCallback<void(int)> callback);
   void Close();
 
+  // Push mode callbacks. When set, data is pushed directly to callbacks
+  // instead of being buffered internally.
+  using OnDataCallback =
+      base::RepeatingCallback<void(base::span<const char> data)>;
+  using OnCompleteCallback = base::OnceCallback<void(Result result)>;
+
+  // Sets callbacks for push mode. Must be called before Open().
+  // When push mode is active, ReadResponseBody() should not be called.
+  void SetPushModeCallbacks(OnDataCallback on_data,
+                            OnCompleteCallback on_complete);
+
+  // Returns true if push mode is enabled.
+  bool is_push_mode() const { return !on_data_callback_.is_null(); }
+
   // Returns the URL response (not including the body). Only valid after
   // `Open()` completes.
   const UrlResponse& response() const { return response_; }
@@ -196,6 +210,10 @@ class UrlLoader final : public blink::WebAssociatedURLLoaderClient {
 
   base::OnceCallback<void(int)> read_callback_;
   base::raw_span<uint8_t> client_buffer_;
+
+  // Push mode callbacks (empty when in pull mode).
+  OnDataCallback on_data_callback_;
+  OnCompleteCallback on_complete_callback_;
 };
 
 }  // namespace chrome_pdf

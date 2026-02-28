@@ -663,5 +663,122 @@ TEST_F(UrlLoaderTest, CloseAgain) {
   loader_->Close();
 }
 
+// Push mode tests
+TEST_F(UrlLoaderTest, SetPushModeCallbacks) {
+  std::vector<char> received_data;
+  Result final_result = Result::kErrorFailed;
+
+  loader_->SetPushModeCallbacks(
+      base::BindRepeating(
+          [](std::vector<char>* out, base::span<const char> data) {
+            out->insert(out->end(), data.begin(), data.end());
+          },
+          &received_data),
+      base::BindOnce([](Result* out, Result result) { *out = result; },
+                     &final_result));
+
+  EXPECT_TRUE(loader_->is_push_mode());
+}
+
+TEST_F(UrlLoaderTest, PushModeDataDelivery) {
+  std::vector<char> received_data;
+  Result final_result = Result::kErrorFailed;
+
+  loader_->SetPushModeCallbacks(
+      base::BindRepeating(
+          [](std::vector<char>* out, base::span<const char> data) {
+            out->insert(out->end(), data.begin(), data.end());
+          },
+          &received_data),
+      base::BindOnce([](Result* out, Result result) { *out = result; },
+                     &final_result));
+
+  loader_->Open(UrlRequest(), mock_open_callback_.Get());
+  loader_->DidReceiveResponse(blink::WebURLResponse());
+
+  // Simulate data arrival.
+  loader_->DidReceiveData(kFakeData);
+
+  // Verify data was pushed directly without buffering.
+  EXPECT_EQ(received_data.size(), kFakeData.size());
+  EXPECT_EQ(std::string(received_data.begin(), received_data.end()),
+            std::string(kFakeData.begin(), kFakeData.end()));
+
+  // Complete loading.
+  loader_->DidFinishLoading();
+  EXPECT_EQ(final_result, Result::kSuccess);
+}
+
+TEST_F(UrlLoaderTest, PushModeMultipleDataChunks) {
+  std::vector<char> received_data;
+  Result final_result = Result::kErrorFailed;
+
+  loader_->SetPushModeCallbacks(
+      base::BindRepeating(
+          [](std::vector<char>* out, base::span<const char> data) {
+            out->insert(out->end(), data.begin(), data.end());
+          },
+          &received_data),
+      base::BindOnce([](Result* out, Result result) { *out = result; },
+                     &final_result));
+
+  loader_->Open(UrlRequest(), mock_open_callback_.Get());
+  loader_->DidReceiveResponse(blink::WebURLResponse());
+
+  // Push multiple data chunks.
+  loader_->DidReceiveData(kFakeData);
+  loader_->DidReceiveData(kFakeData);
+  loader_->DidReceiveData(kFakeData);
+
+  // Verify all data was received.
+  EXPECT_EQ(received_data.size(), kFakeData.size() * 3);
+
+  loader_->DidFinishLoading();
+  EXPECT_EQ(final_result, Result::kSuccess);
+}
+
+TEST_F(UrlLoaderTest, PushModeErrorHandling) {
+  std::vector<char> received_data;
+  Result final_result = Result::kSuccess;
+
+  loader_->SetPushModeCallbacks(
+      base::BindRepeating(
+          [](std::vector<char>* out, base::span<const char> data) {
+            out->insert(out->end(), data.begin(), data.end());
+          },
+          &received_data),
+      base::BindOnce([](Result* out, Result result) { *out = result; },
+                     &final_result));
+
+  loader_->Open(UrlRequest(), mock_open_callback_.Get());
+  loader_->DidReceiveResponse(blink::WebURLResponse());
+
+  // Simulate data arrival then error.
+  loader_->DidReceiveData(kFakeData);
+  EXPECT_EQ(received_data.size(), kFakeData.size());
+
+  // Simulate failure.
+  loader_->DidFail(MakeWebURLError(net::ERR_FAILED));
+  EXPECT_EQ(final_result, Result::kErrorFailed);
+}
+
+TEST_F(UrlLoaderTest, PullModeStillWorks) {
+  // Verify pull mode works when push mode is not enabled.
+  EXPECT_FALSE(loader_->is_push_mode());
+
+  loader_->Open(UrlRequest(), mock_open_callback_.Get());
+  loader_->DidReceiveResponse(blink::WebURLResponse());
+  loader_->DidReceiveData(kFakeData);
+
+  // Read data in pull mode.
+  char buffer[100] = {};
+  loader_->ReadResponseBody(base::as_writable_byte_span(buffer),
+                            mock_read_callback_.Get());
+
+  // Data should be available.
+  EXPECT_EQ(std::string(buffer, kFakeData.size()),
+            std::string(kFakeData.begin(), kFakeData.end()));
+}
+
 }  // namespace
 }  // namespace chrome_pdf

@@ -47,6 +47,9 @@ class URLLoaderWrapperImpl : public URLLoaderWrapper {
                  base::OnceCallback<void(bool)> callback) override;
   void ReadResponseBody(base::span<uint8_t> buffer,
                         base::OnceCallback<void(int)> callback) override;
+  void SetPushModeCallbacks(OnDataCallback on_data,
+                            OnCompleteCallback on_complete) override;
+  bool IsPushModeEnabled() const override;
 
  private:
   void SetHeadersFromLoader();
